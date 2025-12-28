@@ -477,14 +477,21 @@ class GNEP():
             Tolerance used in L-BFGS-B optimization.
 
         Returns:
-        x_i     : best response of agent i, within the full vector x
-        fi_opt  : optimal objective value for agent i at best response, fi(x)
-        res     : SciPy optimize result
+        -----------
+        sol : SimpleNamespace
+            Solution object with fields:
+            x : ndarray
+                best response of agent i, within the full vector x.
+            f : ndarray
+                optimal objective value for agent i at best response, fi(x).
+            stats : Statistics about the optimization result.
         """
 
         i1 = self.i1[i]
         i2 = self.i2[i]
         x = jnp.asarray(x)
+
+        t0 = time.time()
 
         @jax.jit
         def fun(xi):
@@ -509,10 +516,19 @@ class GNEP():
             fun=fun, tol=tol, method="L-BFGS-B", maxiter=maxiter, options=options)
         xi, state = solver.run(x[i1:i2], bounds=(li, ui))
         x_new = np.asarray(x.at[i1:i2].set(xi))
-        fi_opt = self.f[i](x_new)
-        iters = state.iter_num
+        
+        t0 = time.time() - t0
 
-        return x_new, fi_opt, iters
+        stats = SimpleNamespace()
+        stats.elapsed_time = t0
+        stats.solver = state
+        stats.iters = state.iter_num
+
+        sol = SimpleNamespace()
+        sol.x = x_new
+        sol.f = self.f[i](x_new)
+        sol.stats = stats
+        return sol
 
 
 class ParametricGNEP(GNEP):
@@ -847,7 +863,8 @@ class ParametricGNEP(GNEP):
         x_i     : best response of agent i
         res     : SciPy optimize result
         """
-
+        t0 = time.time()
+        
         i1 = self.i1[i]
         i2 = self.i2[i]
         x = jnp.asarray(x)
@@ -875,10 +892,19 @@ class ParametricGNEP(GNEP):
             fun=fun, tol=tol, method="L-BFGS-B", maxiter=maxiter, options=options)
         xi, state = solver.run(x[i1:i2], bounds=(li, ui))
         x_new = np.asarray(x.at[i1:i2].set(xi))
-        fi_opt = self.f[i](x_new, p)
-        iters = state.iter_num
+        
+        t0 = time.time() - t0
 
-        return x_new, fi_opt, iters
+        stats = SimpleNamespace()
+        stats.elapsed_time = t0
+        stats.solver = state
+        stats.iters = state.iter_num
+
+        sol = SimpleNamespace()
+        sol.x = x_new
+        sol.f = self.f[i](x_new, p)
+        sol.stats = stats
+        return sol
 
 
 class GNEP_LQ():

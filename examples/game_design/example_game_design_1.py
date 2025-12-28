@@ -78,7 +78,8 @@ print(f"[{stats.kkt_evals:2d} KKT evaluation(s), elapsed time = {stats.elapsed_t
 
 # check best responses of all agents at the computed GNE
 for i in range(pgnep.N):
-    x_br, fbr_opt, iters = pgnep.best_response(i, x_star, p_star, rho=1e8)
+    sol = pgnep.best_response(i, x_star, p_star, rho=1e8)
+    x_br, fbr_opt, iters = sol.x, sol.f, sol.stats.iters
     print(f"Agent {i}'s BR at the GNE: ", end="")
     print(f"|x_br-x_star| = {jnp.linalg.norm(x_br-x_star): 10.2g}", end="")
     # print(f"fbr_opt = {fbr_opt: 10.7g}")

@@ -3,7 +3,7 @@
 # NashOpt  
 ### A Python library for computing generalized Nash equilibria and solving game-design and game-theoretic control problems
 
-This repository includes a library for solving different classes of nonlinear **Generalized Nash Equilibrium Problems** (GNEPs). The decision variables and Lagrange multipliers that jointly satisfy the KKT conditions for all agents are determined by solving a nonlinear least-squares problem. If a zero residual is obtained, this corresponds to a potential generalized Nash equilibrium, a property that can be verified by evaluating the individual **best responses**. The package can also solve **game-design** problems by optimizing the parameters of a **multiparametric GNEP** by box-constrained nonlinear optimization using the **L-BFGS-B** method, as well as **game-theoretic control** problems such as **Linear Quadratic Regulation** and **Model Predictive Control**.
+This repository includes a library for solving different classes of nonlinear **Generalized Nash Equilibrium Problems** (GNEPs). The decision variables and Lagrange multipliers that jointly satisfy the KKT conditions for all agents are determined by solving a nonlinear least-squares problem. If a zero residual is obtained, this corresponds to a potential generalized Nash equilibrium, a property that can be verified by evaluating the individual **best responses**. For the special case of **Linear-Quadratic Games**, one or more equilibria are obtained by solving mixed-integer linear programming problems. The package can also solve **game-design** problems by optimizing the parameters of a **multiparametric GNEP** by box-constrained nonlinear optimization, as well as **game-theoretic control** problems, such as **Linear Quadratic Regulation** and **Model Predictive Control** problems.
 
 ---
 ## Installation
@@ -15,7 +15,7 @@ pip install nashopt
 
 ## Overview
 
-We consider a game with $N$ agents. Each agent $i$ solves the following problem
+Consider a game with $N$ agents. Each agent $i$ solves the following problem
 
 $$
 x_i^\star \in \arg\min_{x_i \in \mathbb{R}^{n_i}} f_i(x)
@@ -24,16 +24,16 @@ $$
 subject to the following shared and local constraints
 
 $$
-g(x) \le 0, \qquad Ax = b, \qquad h(x)=0, \qquad \ell \le x \le u.
+g(x) \leq 0, \qquad A_{\textrm eq}x = b_{\textrm eq}, \qquad h(x)=0, \qquad \ell_i \leq x_i \leq u_i
 $$
 
 where:
 
 - $f_i$ is the objective of agent $i$, specified as a <a href="https://github.com/jax-ml/jax">JAX</a> function;
-- $x = (x_1^\top \dots x_N^\top)^\top \in \mathbb{R}^n$;
+- $x = (x_1^\top \dots x_N^\top)^\top \in \mathbb{R}^n$ are the decision variables, $x_i\in\mathbb{R}^{n_i}$;
 - $g : \mathbb{R}^n \to \mathbb{R}^{n_g}$ encodes shared inequality constraints (JAX function);
-- $A, b$ define shared equality constraints;
-- $h : \mathbb{R}^n \to \mathbb{R}^{n_h}$ encodes shared equality constraints (JAX function);
+- $A_{\textrm eq}, b_{\textrm eq}$ define linear shared equality constraints;
+- $h : \mathbb{R}^n \to \mathbb{R}^{n_h}$ encodes shared nonlinear equality constraints (JAX function);
 - $\ell, u$ are local box constraints.
 
 A **generalized Nash equilibrium** $x^\star$ is a vector such that no agent can reduce their cost given the others' strategies and feasibility constraints, i.e.,
@@ -44,9 +44,9 @@ for all feasible $x=(x_i,x_{-i}^\star)$, or equivalently, in terms of **best res
 
 $$
 \begin{aligned}
-x_i^\star \in \arg\min_{\ell_{i}\leq x_{i}\leq u_{i}\in \mathbb{R}^{n_{i}}} &f_i(x)\\
+x_i^\star \in \arg\min_{\ell_{i}\leq x_{i}\leq u_{i}} &f_i(x)\\
 \textrm{s.t.} \quad &g(x) \leq 0 \\
-&Ax = b\\
+&A_{\textrm eq}x = b_{\textrm eq}\\
 &h(x) = 0\\
 &x_{-i}=x_{-i}^\star.
 \end{aligned}
@@ -108,10 +108,10 @@ $$R(z)=0$$
 where $z = (x, \{\lambda_i\}, \{\mu_i\}, \{v_i\}, \{y_i\})$.  To find a solution, we solve the nonlinear least-squares problem
 
 $$
-   \min_z \frac{1}{2}\|R(z)\|^2
+   \min_z \frac{1}{2}\|R(z)\|_2^2
 $$
 
-using `scipy`'s nonlinear least squares methods in <a href="https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.least_squares.html#scipy.optimize.least_squares">`least_squares`</a>, exploiting JAX's autodiff to evaluate Jacobians.
+using `scipy`'s nonlinear least squares methods in <a href="https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.least_squares.html#scipy.optimize.least_squares">`least_squares`</a>, exploiting JAX's automatic differentiation capabilities.
 
 After solving the nonlinear least-squares problem, if the residual $R(z^\star)=0$, we can check if indeed $x^\star$ is a GNE by computing the best responses of each agent
 
@@ -128,8 +128,8 @@ $$ \textrm{s.t.} \qquad \ell_i \leq x_i \leq u_i$$
 
 with $x_{-i}=x^\star_{-i}$, where $\rho\gg 1$ is a large penalty on the violation of shared constraints.
 
-*Variational GNEs* can be obtained by enforcing that the Lagrange multipliers associated with the
-shared constraints are the same for all players, i.e., by replacing $\{\lambda_i\}$ with a single vector $\lambda$ and $\{\mu_i\}$ with a single vector $\mu$, which further reduces the dimension of the zero-finding problem.
+*Variational GNEs* can be obtained by making the Lagrange multipliers associated with the
+shared constraints the same for all players, i.e., by replacing $\{\lambda_i\}$ with a single vector $\lambda$ and $\{\mu_i\}$ with a single vector $\mu$, which further reduces the dimension of the zero-finding problem.
 
 ### Example
 
@@ -181,7 +181,7 @@ which gives the following solution:
 x* = [ 1.  0.  0.   0.5]
 ```
 
-We can check if the KKT conditions are satisfied by looking at the residual $||R(x)||_2$:
+We can check if the KKT conditions are satisfied by looking at the residual norm $||R(x)||_2$:
 
 ```python
 residual = sol.res
@@ -197,12 +197,12 @@ lam_star = sol.lam
 stats = sol.stats
 ```
 
-We can check if indeed $x^\star$ is an equilibrium by evaluating the agents' best responses:
+After solving the problem, we can check if indeed $x^\star$ is an equilibrium by evaluating the agents' individual best responses:
 
 ```python
 for i in range(gnep.N):
-    x_br, fbr_opt, iters = gnep.best_response(i, x_star)
-    print(x_br)
+    sol = gnep.best_response(i, x_star)
+    print(sol.x)
 ```
 
 ```
@@ -231,19 +231,28 @@ where `h` is a vector function returning a `jax` array of length `nh`.
 
 You can also specify an initial guess $x_0$ to the GNEP solver as follows:
 ```python
-x_star, lam_star, residual, opt = gnep.solve(x0)
+sol = gnep.solve(x0)
 ```
 
 To compute a **variational GNE** solution, set flag `variational` = `True`:
+
 ```python
 gnep = GNEP( ... , variational=True)
 ```
 
-To solve the GNEP via a trust-region reflective algorithm, use the following call:
+To decide the nonlinear least-squares solver used to compute the GNEP, use the following call:
+
 ```python
-x_star, lam_star, residual, opt = gnep.solve(x0, method = "trf")
+sol = gnep.solve(x0, method = "trf")
 ```
-to override the default Levenberg-Marquardt method = `"lm"`.
+
+or
+
+```python
+sol = gnep.solve(x0, method = "lm")
+```
+
+where `trf` calls a trust-region reflective algorithm, while `lm` a Levenberg-Marquardt method.
 
 ## Game Design
 
@@ -407,7 +416,7 @@ u = sol.u
 
 > [1] Alexander Fischer. *A special Newton-type optimization method.* **Optimization**, 24(3–4):269–284, 1992.
 
-### Citation
+## Citation
 
 ```
 @misc{nashopt,
@@ -418,13 +427,21 @@ u = sol.u
 }
 ```
 
-### License
+---
+## Related packages
+
+<a href="https://github.com/bemporad/nash-mpqp">**nash-mpqp**</a> a solver for solving linear-quadratic multi-parametric generalized Nash equilibrium (GNE) problems in *explicit* form.
+
+<a href="https://github.com/bemporad/gnep-learn">**gnep-learn**</a> a Python package for solving generalized Nash equilibrium problems by *active learning* of best-response models.
+
+---
+## License
 
 Apache 2.0
 
 (C) 2025 A. Bemporad
 
-### Acknowledgement
+## Acknowledgement
 This work was funded by the European Union (ERC Advanced Research Grant COMPACT, No. 101141351). Views and opinions expressed are however those of the authors only and do not necessarily reflect those of the European Union or the European Research Council. Neither the European Union nor the granting authority can be held responsible for them.
 
 <p align="center">
