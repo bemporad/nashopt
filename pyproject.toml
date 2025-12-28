@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nashopt"
+version = "1.0.0"
+authors = [
+  { name="Alberto Bemporad", email="alberto.bemporad@imtlucca.it" }
+]
+description = "NashOpt - A Python Library for Computing Generalized Nash Equilibria and Solving Game-Design and Game-Theoretic Control Problems."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy","jax","jaxopt","scipy","highspy","osqp"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+keywords = ["generalized nash equilibrium problems", "game theory"]
+
+[project.urls]
+"Homepage" = "https://github.com/bemporad/nashopt"
