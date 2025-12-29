@@ -375,7 +375,7 @@ $$
 and the optimal parameters $p$ are also determined by MILP, or as the convex quadratic function
         
 $$
-                    f(x,p) = \frac{1}{2} [x^T\ p^T] Q_J \left[\begin{array}{c}x \\ p\end{array}\right] + c_J^T \left[\begin{array}{c}x \\ p\end{array}\right]
+                    f(x,p) = \frac{1}{2} [x^T\ p^T] Q_J \begin{bmatrix}x \\ p\end{bmatrix} + c_J^T \begin{bmatrix}x \\ p\end{bmatrix}
 $$
 
 ```python
