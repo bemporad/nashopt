@@ -11,11 +11,11 @@ mpl.rcParams.update({
     "text.usetex": True,
     "font.family": "serif",
     "font.serif": ["Computer Modern Roman"],
-    "axes.labelsize": 20,
-    "font.size": 20,
-    "legend.fontsize": 20,
-    "xtick.labelsize": 20,
-    "ytick.labelsize": 20,
+    "axes.labelsize": 32,
+    "font.size": 32,
+    "legend.fontsize": 32,
+    "xtick.labelsize": 32,
+    "ytick.labelsize": 32,
 })
 
 # Solve a GNE problem with N agents and look for sparse solutions
@@ -73,7 +73,6 @@ for alpha1 in alpha1_set:
     print(f"alpha1 = {alpha1:10.7g}, ||x*||_0 = {nnz:3d}, J(x*,p*) = {J_star:7.4f}, ||R(x*,p*)||_2 = {jnp.linalg.norm(residual):7.2g}")
 
 
-plt.rcParams.update({'font.size': 20})
 fig, ax1 = plt.subplots(figsize=(12, 7))
 colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
 ax1.plot(alpha1_set, nnz_set, color=colors[0], linewidth=4)
@@ -87,7 +86,7 @@ ax2.set_ylabel(r'optimal cost', color=colors[2])
 ax2.tick_params(axis='y', colors=colors[2])   # y-tick labels + ticks
 plt.grid()
 plt.show()
-plt.savefig("/Users/bemporad/Alberto/Lavori/Optimization/Nash_Game_Theory/NashOpt/latex/figures/example_sparse.pdf", bbox_inches='tight')
+plt.savefig("example_sparse.pdf", bbox_inches='tight')
 
 print(
     f"CPU time: init = {time_set[0]: 7.4f} s, subsequent (average) = {sum(time_set[1:])/len(time_set[1:]):7.4f} s")
