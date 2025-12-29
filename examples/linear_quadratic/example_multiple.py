@@ -41,7 +41,7 @@ if npar > 0:
 for variational in [False, True]:
     print("\n\n\033[1;31mVariational GNEP:\033[0m", variational)
     gnep_lq = GNEP_LQ(sizes, Q, c, F, lb, ub, pmin, pmax, A,
-                      b, S, Aeq, beq, Seq, M=1e4, variational=variational)
+                      b, S, Aeq, beq, Seq, M=1e4, variational=variational, solver='highs')
     sol = gnep_lq.solve(max_solutions=max_solutions, verbose=1)
 
     if not isinstance(sol, list):

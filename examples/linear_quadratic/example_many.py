@@ -23,9 +23,9 @@ for ex in range(1, 11+1):
     pmax = None  # no parameters
     xdes = None  # no desired equilibrium point
     eval_xdes = False
-    D = None
-    E = None
-    h = None
+    D_pwa = None
+    E_pwa = None
+    h_pwa = None
     max_solutions = 1  # only one solution
     variational = False  # not variational GNEP
 
@@ -137,17 +137,17 @@ for ex in range(1, 11+1):
 
     if eval_xdes:
         gnep_lq = GNEP_LQ(sizes, Q, c, F, lb, ub, pmin, pmax,
-                          A, b, S, Aeq, beq, Seq, D=None, E=None, h=None, M=1e4)
+                          A, b, S, Aeq, beq, Seq, D_pwa=None, E_pwa=None, h_pwa=None, M=1e4)
         sol = gnep_lq.solve(max_solutions=1, verbose=0)
         xdes = sol.x  # set desired equilibrium point to the computed one
     if xdes is not None:
         # |x - xdes|_inf -> eps >= +/- (x - xdes)
-        D = np.vstack((np.eye(nvar), -np.eye(nvar)))
-        E = np.zeros((2*nvar, npar))
-        h = np.hstack([-xdes, xdes])
+        D_pwa = np.vstack((np.eye(nvar), -np.eye(nvar)))
+        E_pwa = np.zeros((2*nvar, npar))
+        h_pwa = np.hstack([-xdes, xdes])
 
     gnep_lq = GNEP_LQ(sizes, Q, c, F, lb, ub, pmin, pmax, A, b, S,
-                      Aeq, beq, Seq, D=D, E=E, h=h, M=1e4, variational=variational)
+                      Aeq, beq, Seq, D_pwa=D_pwa, E_pwa=E_pwa, h_pwa=h_pwa, M=1e4, variational=variational)
     sol = gnep_lq.solve(max_solutions=max_solutions, verbose=1)
 
     if not isinstance(sol, list):

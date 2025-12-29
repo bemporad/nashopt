@@ -3,7 +3,7 @@ NashOpt - A Python Library for Solving Generalized Nash Equilibrium (GNE) and Ga
 
 For general nonlinear problems, the KKT conditions of all agents are enforced jointly by solving a nonlinear least-squares problem, using JAX for automatic differentiation. Game-design problems can also be solved on multi-parametric GNE problems to determine optimal game parameters.
 
-For linear-quadratic problems, the KKT conditions are enforced instead via mixed-integer linear programming (MILP). MILP enables finding GNE solutions, if they exist, and to possibly enumerate all GNEs in case of multiple equilibria. Game-design problems based on convex piecewise affine objectives can also be solved via MILP.
+For linear-quadratic problems, the KKT conditions are enforced instead via mixed-integer linear programming (MILP). MILP enables finding GNE solutions, if they exist, and to possibly enumerate all GNEs in case of multiple equilibria. Game-design problems based on convex piecewise affine objectives can also be solved via mip.
 
 (C) 2025 Alberto Bemporad
 """
@@ -23,6 +23,12 @@ from scipy.sparse import csc_matrix
 from scipy.sparse import eye as speye
 from scipy.sparse import vstack as spvstack
 import time
+
+try:
+    import gurobipy as gp
+    GUROBI_INSTALLED = True
+except ImportError:
+    GUROBI_INSTALLED = False
 
 jax.config.update("jax_enable_x64", True)
 
@@ -364,7 +370,7 @@ class GNEP():
 
         return jnp.concatenate(res)
 
-    def solve(self, x0=None, max_nfev=200, tol=1e-12, method="trf", verbose=1):
+    def solve(self, x0=None, max_nfev=200, tol=1e-12, solver="trf", verbose=1):
         """ Solve the GNEP starting from initial guess x0.
 
         The residuals of the KKT optimality conditions of all agents are minimized jointly as a 
@@ -378,7 +384,7 @@ class GNEP():
             Maximum number of function evaluations.
         tol : float, optional
             Tolerance used for solver convergence.
-        method : str, optional
+        solver : str, optional
             Solver method used by scipy.optimize.least_squares: "lm" (Levenberg-Marquardt) or "trf" (Trust Region Reflective algorithm). Method "dogbox" is another option.
         verbose : int, optional
             Verbosity level (0: silent, 1: termination report, 2: progress (not supported by "lm")).
@@ -403,7 +409,7 @@ class GNEP():
         """
         t0 = time.time()
 
-        method = method.lower()
+        solver = solver.lower()
 
         if x0 is None:
             x0 = jnp.zeros(self.nvar)
@@ -420,7 +426,7 @@ class GNEP():
         f = jax.jit(self.kkt_residual)
         df = jax.jit(jax.jacobian(self.kkt_residual))
         try:
-            solution = least_squares(f, z0, jac=df, method=method, verbose=verbose,
+            solution = least_squares(f, z0, jac=df, method=solver, verbose=verbose,
                                      ftol=tol, xtol=tol, gtol=tol, max_nfev=max_nfev)
         except Exception as e:
             raise RuntimeError(
@@ -444,7 +450,7 @@ class GNEP():
         norm_res = eval_residual(res, verbose, kkt_evals, t0)
                                         
         stats = SimpleNamespace()
-        stats.method = method
+        stats.solver = solver
         stats.kkt_evals = kkt_evals
         stats.elapsed_time = t0
         
@@ -708,7 +714,7 @@ class ParametricGNEP(GNEP):
 
         # also include the case of no J and pure L1-regularization, since alpha2 = 0 cannot be handled by least_squares
         if is_J or (L1_regularized and alpha2 == 0.0):
-            stats.method = "L-BFGS"
+            stats.solver = "L-BFGS"
             options = {'iprint': -1, 'maxls': 20, 'gtol': tol, 'eps': tol,
                        'ftol': tol, 'maxfun': maxiter, 'maxcor': 10}
 
@@ -743,7 +749,7 @@ class ParametricGNEP(GNEP):
 
         else:
             # No design objective, just solve for a GNE with possible regularization
-            stats.method = "TRF"
+            stats.solver = "TRF"
             srho = jnp.sqrt(rho)
             alpha3 = jnp.sqrt(2.*alpha2)
 
@@ -908,7 +914,7 @@ class ParametricGNEP(GNEP):
 
 
 class GNEP_LQ():
-    def __init__(self, dim, Q, c, F=None, lb=None, ub=None, pmin=None, pmax=None, A=None, b=None, S=None, Aeq=None, beq=None, Seq=None, D=None, E=None, h=None, M=1e4, variational=False):
+    def __init__(self, dim, Q, c, F=None, lb=None, ub=None, pmin=None, pmax=None, A=None, b=None, S=None, Aeq=None, beq=None, Seq=None, D_pwa=None, E_pwa=None, h_pwa=None, Q_J=None, c_J=None, M=1e4, variational=False, solver="highs"):
         """Given a (multiparametric) generalized Nash equilibrium problem with N agents,
         convex quadratic objectives, and linear constraints, solve the following game-design problem
 
@@ -921,11 +927,15 @@ class GNEP_LQ():
                                 Aeq x = beq + Seq p
                                 lb <= x <= ub
 
-        where f is the sum of convex piecewise affine (PWA) functions
+        where f is either the sum of convex piecewise affine (PWA) functions
 
-                    f(x,p) = sum_{k=1..nk} max_{i=1..nk} { D[k](i,:) x + E[k](i,:) p + h[k](i) }
+                    f(x,p) = sum_{k=1..nk} max_{i=1..nk} { D_pwa[k](i,:) x + E_pwa[k](i,:) p + h_pwa[k](i) }
+        
+        or the convex quadratic function
+        
+                    f(x,p) = 0.5 [x p]^T Q_J [x;p] + c_J^T [x;p]
 
-        x = [x_1; x_2; ...; x_N] is the stacked vector of all agents' variables,
+        or the sum of both. Here, x = [x_1; x_2; ...; x_N] is the stacked vector of all agents' variables,
         p is a vector of parameters (possibly empty), and Qi, c_i, F_i are the cost function data for agent i.
 
         Special cases of the general problem are:
@@ -967,17 +977,23 @@ class GNEP_LQ():
             Shared equality constraint RHS vector.
         Seq : (nAeq, npar) np.ndarray or None
             Shared equality constraint parameter matrix.        
-        D : (list of) (nf,nx) np.ndarray(s) or None
+        D_pwa : (list of) (nf,nx) np.ndarray(s) or None
             Matrix defining the convex PWA objective function for designing the game. If None, no objective function is used, and only an equilibrium point is searched for.
-        E : (list of) (nf, npar) np.ndarray(s) or None
+        E_pwa : (list of) (nf, npar) np.ndarray(s) or None
             Parameter matrix defining the convex PWA objective function for designing the game. 
-        h : (list of) (nf,) np.ndarray(s) or None
+        h_pwa : (list of) (nf,) np.ndarray(s) or None
             Vector defining the convex PWA objective function for designing the game. 
+        Q_J : (nx+npar, nx+npar) np.ndarray or None
+            Hessian matrix defining the convex quadratic objective function for designing the game. If None, no quadratic objective function is used.
+        c_J : (nx+npar,) np.ndarray or None
+            Linear term of the convex quadratic objective function for designing the game.
         M   : float
             Big-M constant for complementary slackness condition. This must be an upper bound
             on the Lagrange multipliers lam(i,j) and on the slack variables y(j).
         variational : bool
             If True, search for a variational GNE.
+        solver : str
+            Solver used to solve the resulting mixed-integer program. "highs" (default) or "gurobi".
 
         (C) 2025 Alberto Bemporad, December 20, 2025
         """
@@ -997,25 +1013,25 @@ class GNEP_LQ():
             if not c[i].shape == (nx,):
                 raise ValueError(f"c[{i}] must be of shape ({nx},)")
 
-        has_objective = (D is not None)
-        if has_objective:
-            if E is None or h is None:
-                raise ValueError("E and h must be provided if D is provided")
-            if not isinstance(D, list):
-                D = [D]
-            if not isinstance(E, list):
-                E = [E]
-            if not isinstance(h, list):
-                h = [h]
-            if not (len(D) == len(E) == len(h)):
+        has_pwa_objective = (D_pwa is not None)
+        if has_pwa_objective:
+            if E_pwa is None or h_pwa is None:
+                raise ValueError("E_pwa and h_pwa must be provided if D_pwa is provided")
+            if not isinstance(D_pwa, list):
+                D_pwa = [D_pwa]
+            if not isinstance(E_pwa, list):
+                E_pwa = [E_pwa]
+            if not isinstance(h_pwa, list):
+                h_pwa = [h_pwa]
+            if not (len(D_pwa) == len(E_pwa) == len(h_pwa)):
                 raise ValueError("D, E, and h must be lists of the same length")
 
-            nJ = len(D)
+            nJ = len(D_pwa)
             for k in range(nJ):
-                nk = D[k].shape[0]
-                if not D[k].shape == (nk, nx):
+                nk = D_pwa[k].shape[0]
+                if not D_pwa[k].shape == (nk, nx):
                     raise ValueError(f"D[{k}] must be of shape ({nk},{nx})")
-                if not h[k].shape == (nk,):
+                if not h_pwa[k].shape == (nk,):
                     raise ValueError(f"h[{k}] must be of shape ({nk},)")
 
         if pmin is not None:
@@ -1029,11 +1045,11 @@ class GNEP_LQ():
             for i in range(N):
                 if not F[i].shape == (nx, npar):
                     raise ValueError(f"F[{i}] must be of shape ({nx},{npar})")
-            if has_objective:
+            if has_pwa_objective:
                 for k in range(nJ):
-                    nk = D[k].shape[0]
-                    if not E[k].shape == (nk, npar):
-                        raise ValueError(f"E[{k}] must be of shape ({nk},{npar})")
+                    nk = D_pwa[k].shape[0]
+                    if not E_pwa[k].shape == (nk, npar):
+                        raise ValueError(f"E_pwa[{k}] must be of shape ({nk},{npar})")
             if not pmin.size == npar:
                 raise ValueError(f"pmin must have {npar} elements")
             if not pmax.size == npar:
@@ -1041,11 +1057,24 @@ class GNEP_LQ():
             if np.all(pmin == pmax):
                 for i in range(N):
                     c[i] = c[i] + F[i] @ pmin  # absorb fixed p into c
-                if has_objective:
+                if has_pwa_objective:
                     for k in range(nJ):
-                        h[k] = h[k] + E[k] @ pmin  # absorb fixed p into h
+                        h_pwa[k] = h_pwa[k] + E_pwa[k] @ pmin  # absorb fixed p into h
         else:
             npar = 0
+
+        has_quad_objective = (Q_J is not None) or (c_J is not None)
+        if has_quad_objective:
+            if Q_J is None:
+                raise ValueError("No quadratic term specified for game objective, use J(x,p) = c_J @ [x;p] = D_pwa@x + E_pwa@p for linear objectives")
+            if solver == "highs":
+                raise ValueError("HiGHS solver does not support quadratic objective functions, use solver='gurobi'")
+            if c_J is None:
+                    c_J = np.zeros((nx + npar))
+            if not Q_J.shape == (nx + npar, nx + npar):
+                raise ValueError(f"Q_J must be of shape ({nx+npar},{nx+npar})")
+            if not c_J.shape == (nx + npar,):
+                raise ValueError(f"c_J must be of shape ({nx+npar},)")
 
         has_ineq_constraints = (A is not None) and (A.size > 0)
         if has_ineq_constraints:
@@ -1104,7 +1133,20 @@ class GNEP_LQ():
             has_params = False  # no parameters anymore
             npar = 0
 
-        inf = highspy.kHighsInf
+        solver = solver.lower()
+
+        if solver == 'gurobi' and not GUROBI_INSTALLED:
+            print(
+                "\033[1;33mWarning: Gurobi not installed, switching to HiGHS solver.\033[0m")
+            solver = "highs"
+        if solver == "highs":
+            inf = highspy.kHighsInf
+        elif solver == "gurobi":
+            inf = gp.GRB.INFINITY
+        else:
+            raise ValueError("solver must be 'highs' or 'gurobi'")
+        
+        self.solver = solver
 
         # Deal with variable bounds
         if lb is None:
@@ -1187,224 +1229,7 @@ class GNEP_LQ():
             nmu = 0
             dim_mu = None
             Geq = None
-
-        # Variable index ranges in the *single* Highs column space (j=agent index)
-        # [ x (0..nx-1) | p (nx..nx+npar-1) | y | lam | delta ]
-        def idx_x(j, i): return cum_dim_x[j] + i
-
-        if has_params:
-            def idx_p(t): return nx + t
-        else:
-            idx_p = None
-
-        if has_ineq_constraints:
-            def idx_lam(j, k): return nx + npar + cum_dim_lam[j] + k
-            def idx_delta(k): return nx + npar + nlam + k
-        else:
-            idx_lam = None
-            idx_delta = None
-
-        if has_eq_constraints:
-            def idx_mu(j, k): return nx + npar + (nlam + ncon) * \
-                has_ineq_constraints + cum_dim_mu[j] + k
-        else:
-            idx_mu = None
-
-        if has_objective:
-            def idx_eps(j): return nx + npar + (nlam + ncon) * \
-                has_ineq_constraints + nmu*has_eq_constraints + j
-        else:
-            idx_eps = None
-
-        milp = highspy.Highs()
-
-        # ------------------------------------------------------------------
-        # 1. Add variables with bounds
-        # ------------------------------------------------------------------
-        # All costs default to 0 => min 0 (feasibility problem).
-
-        # x: free (or set bounds as needed)
-        for i in range(nx):
-            milp.addVar(lb[i], ub[i])
-
-        if has_params:
-            # p: free (or set bounds as needed)
-            for t in range(npar):
-                milp.addVar(pmin[t], pmax[t])
-
-        if has_ineq_constraints:
-            # lam: lam >=0
-            for j in range(N):
-                for k in range(dim_lam[j]):
-                    milp.addVar(0.0, inf)
-
-            # delta: binary => bounds [0,1] + integrality = integer
-            for k in range(ncon):
-                milp.addVar(0.0, 1.0)
-
-            # Mark delta columns as integer
-            # (Binary is simply integer with bounds [0,1])
-            for k in range(ncon):
-                col = idx_delta(k)
-                milp.changeColIntegrality(col, highspy.HighsVarType.kInteger)
-
-        if has_eq_constraints:
-            # mu: free
-            for j in range(N):
-                for k in range(dim_mu[j]):
-                    milp.addVar(-inf, inf)
-
-        if has_objective:
-            for k in range(nJ):
-                # eps variable for PWA objective, unconstrained
-                milp.addVar(-inf, inf)
-
-        # ------------------------------------------------------------------
-        # 2. Add constraints
-        # ------------------------------------------------------------------
-        # (a) Qi x + Fi p + Ai^T lam_i + Q(i,-i) x(-i) = - ci
-        for j in range(N):
-
-            if has_ineq_constraints:
-                Gj = G[:, j]  # constraints involving agent j
-                nGj = np.sum(Gj)
-            if has_eq_constraints:
-                Geqj = Geq[:, j]  # equality constraints involving agent j
-                nGeqj = np.sum(Geqj)
-
-            for i in range(dim[j]):
-                indices = []
-                values = []
-
-                # Qx part: Q[j,:]@x = Q[j,i]@x(i) + Q[j,(-i)]@x(-i)
-                row_Q = Q[j][idx_x(j, i), :]
-                for k in range(nx):
-                    if row_Q[k] != 0.0:
-                        indices.append(k)
-                        values.append(row_Q[k])
-
-                if has_params:
-                    # Fp part: sum_t F[j,t] * p_t
-                    row_F = F[j][idx_x(j, i), :]
-                    for t in range(npar):
-                        if row_F[t] != 0.0:
-                            indices.append(idx_p(t))
-                            values.append(row_F[t])
-
-                if has_ineq_constraints:
-                    # A^T lam part: sum_k A[k,j] * lam_k
-                    # A is (nA, nx), so column j is A[:, j]
-                    col_Aj = A[Gj, idx_x(j, i)]
-                    for k in range(nGj):
-                        if col_Aj[k] != 0.0:
-                            indices.append(idx_lam(j, k))
-                            values.append(col_Aj[k])
-
-                if has_eq_constraints:
-                    # Aeq^T mu part: sum_k Aeq[k,j] * mu_k
-                    # Aeq is (nAeq, nx), so column j is Aeq[:, j]
-                    col_Aeqj = Aeq[Geqj, idx_x(j, i)]
-                    for k in range(nGeqj):
-                        if col_Aeqj[k] != 0.0:
-                            indices.append(idx_mu(j, k))
-                            values.append(col_Aeqj[k])
-
-                # Equality: lower = upper = -c_j
-                rhs = -float(c[j][idx_x(j, i)])
-                num_nz = len(indices)
-                if num_nz == 0:
-                    # still add the row with empty pattern
-                    milp.addRow(rhs, rhs, 0, [], [])
-                else:
-                    milp.addRow(rhs, rhs, num_nz,
-                                np.array(indices, dtype=np.int64),
-                                np.array(values, dtype=np.double))
-
-        if has_ineq_constraints:
-            # (b) 0 <= lam(i,j) <= M * delta(j)
-            for j in range(N):
-                ind_lam = 0
-                for k in range(ncon):
-                    if G[k, j]:  # agent j involved in constraint k or vGNE
-                        indices = np.array(
-                            [idx_lam(j, ind_lam), idx_delta(k)], dtype=np.int64)
-                        values = np.array([1.0, -M], dtype=np.double)
-                        lower = -inf
-                        upper = 0.
-                        milp.addRow(lower, upper, len(
-                            indices), indices, values)
-                        ind_lam += 1
-
-            # (c) b + S p - A x <= M (1-delta)
-            for i in range(ncon):
-                indices = [idx_delta(i)]
-                values = [M]
-                upper = float(M - b[i])
-                for k in range(nx):
-                    if A[i, k] != 0.0:
-                        indices.append(k)
-                        values.append(-A[i, k])
-                if has_params:
-                    for t in range(npar):
-                        if S[i, t] != 0.0:
-                            indices.append(idx_p(t))
-                            values.append(S[i, t])
-                indices = np.array(indices, dtype=np.int64)
-                values = np.array(values, dtype=np.double)
-                milp.addRow(-inf, upper, len(indices), indices, values)
-
-            # (d) A x <= b + S p
-            for i in range(ncon):
-                indices = []
-                values = []
-
-                # Ai x part
-                row_Ai = A[i, :]
-                for k in range(nx):
-                    if row_Ai[k] != 0.0:
-                        indices.append(k)
-                        values.append(row_Ai[k])
-
-                if has_params:
-                    # Si p part
-                    row_Si = S[i, :]
-                    for t in range(npar):
-                        if row_Si[t] != 0.0:
-                            indices.append(idx_p(t))
-                            values.append(-row_Si[t])
-
-                rhs = float(b[i])
-                num_nz = len(indices)
-                milp.addRow(-inf, rhs, num_nz,
-                            np.array(indices, dtype=np.int64),
-                            np.array(values, dtype=np.double))
-
-        if has_eq_constraints:
-            # (d2) Aeq x - Seq p = beq
-            for i in range(nconeq):
-                indices = []
-                values = []
-
-                # Aeqi x part
-                row_Aeqi = Aeq[i, :]
-                for k in range(nx):
-                    if row_Aeqi[k] != 0.0:
-                        indices.append(k)
-                        values.append(row_Aeqi[k])
-
-                if has_params:
-                    # Seqi p part
-                    row_Seqi = Seq[i, :]
-                    for t in range(npar):
-                        if row_Seqi[t] != 0.0:
-                            indices.append(idx_p(t))
-                            values.append(-row_Seqi[t])
-
-                rhs = float(beq[i])
-                num_nz = len(indices)
-                milp.addRow(rhs, rhs, num_nz,
-                            np.array(indices, dtype=np.int64),
-                            np.array(values, dtype=np.double))
+            
         if variational:
             if has_ineq_constraints:
                 # Find mapping from multiplier index to original constraint index for shared inequalities
@@ -1418,20 +1243,6 @@ class GNEP_LQ():
                             c_map_j[j] = k
                     c_map.append(c_map_j)
 
-                # exclude box constraints, they have their own multipliers
-                for j in range(ncon-nbox):
-                    # indices of agents involved in constraint j
-                    ii = np.argwhere(G[j, :])
-                    i1 = int(ii[0])  # first agent involved
-                    for k in range(1, len(ii)):  # loop not executed if only one agent involved
-                        i2 = int(ii[k])  # other agent involved
-                        indices = [idx_lam(i1, c_map[i1][j]),
-                                   idx_lam(i2, c_map[i2][j])]
-                        num_nz = 2
-                        values = [1.0, -1.0]
-                        milp.addRow(0.0, 0.0, num_nz, np.array(indices, dtype=np.int64),
-                                    np.array(values, dtype=np.double))
-
             if has_eq_constraints:
                 # Find mapping from multiplier index to original constraint index for shared equalities
                 ceq_map = []
@@ -1443,59 +1254,440 @@ class GNEP_LQ():
                             # constraint j involves agent i -> this corresponds to mu(i,k)
                             ceq_map_j[j] = k
                     ceq_map.append(ceq_map_j)
-                for j in range(nconeq):
-                    # indices of agents involved in constraint j
-                    ii = np.argwhere(Geq[j, :])
-                    i1 = int(ii[0])  # first agent involved
-                    for k in range(1, len(ii)):  # loop not executed if only one agent involved
-                        i2 = int(ii[k])  # other agent involved
-                        indices = [idx_mu(i1, ceq_map[i1][j]),
-                                   idx_mu(i2, ceq_map[i2][j])]
-                        num_nz = 2
-                        values = [1.0, -1.0]
-                        milp.addRow(0.0, 0.0, num_nz, np.array(indices, dtype=np.int64),
-                                    np.array(values, dtype=np.double))
 
-        if has_objective:
-            # (e) eps[k] >= D[k](i,:) x + E[k](i,:) p + h[k](i), i=1..nk
-            for k in range(nJ):
-                for i in range(D[k].shape[0]):
+        # Variable index ranges in the *single* Highs column space (j=agent index)
+        # [ x (0..nx-1) | p (nx..nx+npar-1) | y | lam | delta ]
+        def idx_x(j, i): return cum_dim_x[j] + i
+
+        if solver == 'highs':
+            if has_params:
+                def idx_p(t): return nx + t
+            else:
+                idx_p = None
+
+            if has_ineq_constraints:
+                def idx_lam(j, k): return nx + npar + cum_dim_lam[j] + k
+                def idx_delta(k): return nx + npar + nlam + k
+            else:
+                idx_lam = None
+                idx_delta = None
+
+            if has_eq_constraints:
+                def idx_mu(j, k): return nx + npar + (nlam + ncon) * \
+                    has_ineq_constraints + cum_dim_mu[j] + k
+            else:
+                idx_mu = None
+
+            if has_pwa_objective:
+                def idx_eps(j): return nx + npar + (nlam + ncon) * \
+                    has_ineq_constraints + nmu*has_eq_constraints + j
+            else:
+                idx_eps = None
+                
+            self.idx_lam = idx_lam
+            self.idx_mu = idx_mu
+            self.idx_delta = idx_delta
+            self.idx_eps = idx_eps
+
+            mip = highspy.Highs()
+
+            # ------------------------------------------------------------------
+            # 1. Add variables with bounds
+            # ------------------------------------------------------------------
+            # All costs default to 0 => min 0 (feasibility problem).
+
+            # x: free (or set bounds as needed)
+            for i in range(nx):
+                mip.addVar(lb[i], ub[i])
+
+            if has_params:
+                # p: free (or set bounds as needed)
+                for t in range(npar):
+                    mip.addVar(pmin[t], pmax[t])
+        
+            if has_ineq_constraints:
+                # lam: lam >=0
+                for j in range(N):
+                    for k in range(dim_lam[j]):
+                        mip.addVar(0.0, inf)
+
+                # delta: binary => bounds [0,1] + integrality = integer
+                for k in range(ncon):
+                    mip.addVar(0.0, 1.0)
+
+                # Mark delta columns as integer
+                # (Binary is simply integer with bounds [0,1])
+                for k in range(ncon):
+                    col = idx_delta(k)
+                    mip.changeColIntegrality(col, highspy.HighsVarType.kInteger)
+
+            if has_eq_constraints:
+                # mu: free
+                for j in range(N):
+                    for k in range(dim_mu[j]):
+                        mip.addVar(-inf, inf)
+
+            if has_pwa_objective:
+                for k in range(nJ):
+                    # eps variable for PWA objective, unconstrained
+                    mip.addVar(-inf, inf)
+
+            # ------------------------------------------------------------------
+            # 2. Add constraints
+            # ------------------------------------------------------------------
+            # (a) Qi x + Fi p + Ai^T lam_i + Q(i,-i) x(-i) = - ci
+            for j in range(N):
+
+                if has_ineq_constraints:
+                    Gj = G[:, j]  # constraints involving agent j
+                    nGj = np.sum(Gj)
+                if has_eq_constraints:
+                    Geqj = Geq[:, j]  # equality constraints involving agent j
+                    nGeqj = np.sum(Geqj)
+
+                for i in range(dim[j]):
                     indices = []
                     values = []
 
-                    # D x part
-                    row_Di = D[k][i, :]
-                    for t in range(nx):
-                        if row_Di[t] != 0.0:
-                            indices.append(t)
-                            values.append(row_Di[t])
+                    # Qx part: Q[j,:]@x = Q[j,i]@x(i) + Q[j,(-i)]@x(-i)
+                    row_Q = Q[j][idx_x(j, i), :]
+                    for k in range(nx):
+                        if row_Q[k] != 0.0:
+                            indices.append(k)
+                            values.append(row_Q[k])
 
-                    # E p part
                     if has_params:
-                        row_Ei = E[k][i, :]
+                        # Fp part: sum_t F[j,t] * p_t
+                        row_F = F[j][idx_x(j, i), :]
                         for t in range(npar):
-                            if row_Ei[t] != 0.0:
+                            if row_F[t] != 0.0:
                                 indices.append(idx_p(t))
-                                values.append(row_Ei[t])
+                                values.append(row_F[t])
 
-                    # eps part
-                    indices.append(idx_eps(k))
-                    values.append(-1.0)
+                    if has_ineq_constraints:
+                        # A^T lam part: sum_k A[k,j] * lam_k
+                        # A is (nA, nx), so column j is A[:, j]
+                        col_Aj = A[Gj, idx_x(j, i)]
+                        for k in range(nGj):
+                            if col_Aj[k] != 0.0:
+                                indices.append(idx_lam(j, k))
+                                values.append(col_Aj[k])
 
-                    rhs = float(-h[k][i])
+                    if has_eq_constraints:
+                        # Aeq^T mu part: sum_k Aeq[k,j] * mu_k
+                        # Aeq is (nAeq, nx), so column j is Aeq[:, j]
+                        col_Aeqj = Aeq[Geqj, idx_x(j, i)]
+                        for k in range(nGeqj):
+                            if col_Aeqj[k] != 0.0:
+                                indices.append(idx_mu(j, k))
+                                values.append(col_Aeqj[k])
+
+                    # Equality: lower = upper = -c_j
+                    rhs = -float(c[j][idx_x(j, i)])
                     num_nz = len(indices)
-                    milp.addRow(-inf, rhs, num_nz,
+                    if num_nz == 0:
+                        # still add the row with empty pattern
+                        mip.addRow(rhs, rhs, 0, [], [])
+                    else:
+                        mip.addRow(rhs, rhs, num_nz,
+                                    np.array(indices, dtype=np.int64),
+                                    np.array(values, dtype=np.double))
+
+            if has_ineq_constraints:
+                # (b) 0 <= lam(i,j) <= M * delta(j)
+                for j in range(N):
+                    ind_lam = 0
+                    for k in range(ncon):
+                        if G[k, j]:  # agent j involved in constraint k or vGNE
+                            indices = np.array(
+                                [idx_lam(j, ind_lam), idx_delta(k)], dtype=np.int64)
+                            values = np.array([1.0, -M], dtype=np.double)
+                            lower = -inf
+                            upper = 0.
+                            mip.addRow(lower, upper, len(
+                                indices), indices, values)
+                            ind_lam += 1
+
+                # (c) b + S p - A x <= M (1-delta)
+                for i in range(ncon):
+                    indices = [idx_delta(i)]
+                    values = [M]
+                    upper = float(M - b[i])
+                    for k in range(nx):
+                        if A[i, k] != 0.0:
+                            indices.append(k)
+                            values.append(-A[i, k])
+                    if has_params:
+                        for t in range(npar):
+                            if S[i, t] != 0.0:
+                                indices.append(idx_p(t))
+                                values.append(S[i, t])
+                    indices = np.array(indices, dtype=np.int64)
+                    values = np.array(values, dtype=np.double)
+                    mip.addRow(-inf, upper, len(indices), indices, values)
+
+                # (d) A x <= b + S p
+                for i in range(ncon):
+                    indices = []
+                    values = []
+
+                    # Ai x part
+                    row_Ai = A[i, :]
+                    for k in range(nx):
+                        if row_Ai[k] != 0.0:
+                            indices.append(k)
+                            values.append(row_Ai[k])
+
+                    if has_params:
+                        # Si p part
+                        row_Si = S[i, :]
+                        for t in range(npar):
+                            if row_Si[t] != 0.0:
+                                indices.append(idx_p(t))
+                                values.append(-row_Si[t])
+
+                    rhs = float(b[i])
+                    num_nz = len(indices)
+                    mip.addRow(-inf, rhs, num_nz,
                                 np.array(indices, dtype=np.int64),
                                 np.array(values, dtype=np.double))
 
-                # Define objective function: min eps
-                milp.changeColCost(idx_eps(k), 1.0)
+            if has_eq_constraints:
+                # (d2) Aeq x - Seq p = beq
+                for i in range(nconeq):
+                    indices = []
+                    values = []
 
-        self.milp = milp
+                    # Aeqi x part
+                    row_Aeqi = Aeq[i, :]
+                    for k in range(nx):
+                        if row_Aeqi[k] != 0.0:
+                            indices.append(k)
+                            values.append(row_Aeqi[k])
+
+                    if has_params:
+                        # Seqi p part
+                        row_Seqi = Seq[i, :]
+                        for t in range(npar):
+                            if row_Seqi[t] != 0.0:
+                                indices.append(idx_p(t))
+                                values.append(-row_Seqi[t])
+
+                    rhs = float(beq[i])
+                    num_nz = len(indices)
+                    mip.addRow(rhs, rhs, num_nz,
+                                np.array(indices, dtype=np.int64),
+                                np.array(values, dtype=np.double))
+            if variational:
+                if has_ineq_constraints:
+                    # exclude box constraints, they have their own multipliers
+                    for j in range(ncon-nbox):
+                        # indices of agents involved in constraint j
+                        ii = np.argwhere(G[j, :])
+                        i1 = int(ii[0])  # first agent involved
+                        for k in range(1, len(ii)):  # loop not executed if only one agent involved
+                            i2 = int(ii[k])  # other agent involved
+                            indices = [idx_lam(i1, c_map[i1][j]),
+                                    idx_lam(i2, c_map[i2][j])]
+                            num_nz = 2
+                            values = [1.0, -1.0]
+                            mip.addRow(0.0, 0.0, num_nz, np.array(indices, dtype=np.int64),
+                                        np.array(values, dtype=np.double))
+
+                if has_eq_constraints:
+                    for j in range(nconeq):
+                        # indices of agents involved in constraint j
+                        ii = np.argwhere(Geq[j, :])
+                        i1 = int(ii[0])  # first agent involved
+                        for k in range(1, len(ii)):  # loop not executed if only one agent involved
+                            i2 = int(ii[k])  # other agent involved
+                            indices = [idx_mu(i1, ceq_map[i1][j]),
+                                    idx_mu(i2, ceq_map[i2][j])]
+                            num_nz = 2
+                            values = [1.0, -1.0]
+                            mip.addRow(0.0, 0.0, num_nz, np.array(indices, dtype=np.int64),
+                                        np.array(values, dtype=np.double))
+
+            if has_pwa_objective:
+                # (e) eps[k] >= D_pwa[k](i,:) x + E_pwa[k](i,:) p + h_pwa[k](i), i=1..nk
+                for k in range(nJ):
+                    for i in range(D_pwa[k].shape[0]):
+                        indices = []
+                        values = []
+
+                        # D x part
+                        row_Di = D_pwa[k][i, :]
+                        for t in range(nx):
+                            if row_Di[t] != 0.0:
+                                indices.append(t)
+                                values.append(row_Di[t])
+
+                        # E p part
+                        if has_params:
+                            row_Ei = E_pwa[k][i, :]
+                            for t in range(npar):
+                                if row_Ei[t] != 0.0:
+                                    indices.append(idx_p(t))
+                                    values.append(row_Ei[t])
+
+                        # eps part
+                        indices.append(idx_eps(k))
+                        values.append(-1.0)
+
+                        rhs = float(-h_pwa[k][i])
+                        num_nz = len(indices)
+                        mip.addRow(-inf, rhs, num_nz,
+                                    np.array(indices, dtype=np.int64),
+                                    np.array(values, dtype=np.double))
+
+                    # Define objective function: min eps
+                    mip.changeColCost(idx_eps(k), 1.0)
+                    
+        else:  # gurobi
+
+            m = gp.Model("GNEP_LQ_MIP")
+            mip = SimpleNamespace()
+            mip.model = m
+            
+            # x variables
+            x = m.addVars(range(nx), lb=lb.tolist(), ub=ub.tolist(), vtype=gp.GRB.CONTINUOUS, name="x")
+            mip.x = x
+            p = m.addVars(range(npar), lb=pmin.tolist(), ub=pmax.tolist(), vtype=gp.GRB.CONTINUOUS, name="p") if has_params else None
+            mip.p = p
+
+            if has_ineq_constraints:
+                # lam: lam >=0
+                lam = []
+                for j in range(N):
+                    lam_j = m.addVars(range(dim_lam[j]), lb=0.0, ub=inf, vtype=gp.GRB.CONTINUOUS, name=f"lam_{j}")
+                    lam.append(lam_j)
+                # delta: binary
+                delta = m.addVars(range(ncon), vtype=gp.GRB.BINARY, name="delta")
+                mip.lam = lam
+                mip.delta = delta
+            else:
+                lam = None
+                delta = None
+            
+            if has_eq_constraints:
+                # mu: free
+                mu = []
+                for j in range(N):
+                    mu_j = m.addVars(range(dim_mu[j]), lb=-inf, ub=inf, vtype=gp.GRB.CONTINUOUS, name=f"mu_{j}")
+                    mu.append(mu_j)
+                mip.mu = mu
+            else:
+                mu = None
+            
+            if has_pwa_objective:
+                eps = m.addVars(range(nJ), lb=-inf, ub=inf, vtype=gp.GRB.CONTINUOUS, name="eps") 
+                mip.eps = eps
+
+            # ------------------------------------------------------------------
+            # 2. Add constraints
+            # ------------------------------------------------------------------
+            # (a) Qi x + Fi p + Ai^T lam_i + Q(i,-i) x(-i) = - ci
+            for j in range(N):
+                if has_ineq_constraints:
+                    Gj = G[:, j]  # constraints involving agent j
+                    nGj = np.sum(Gj)
+                if has_eq_constraints:
+                    Geqj = Geq[:, j]  # equality constraints involving agent j
+                    nGeqj = np.sum(Geqj)
+
+                KKT1 = []
+                for i in range(dim[j]):
+                    # Qx part: Q[j,:]@x = Q[j,i]@x(i) + Q[j,(-i)]@x(-i)
+                    row_Q = Q[j][cum_dim_x[j] + i, :]
+                    KKT1_i = gp.quicksum(row_Q[t]*x[t] for t in range(nx)) + c[j][cum_dim_x[j] + i]
+
+                    if has_params:
+                        # Fp part: sum_t F[j,t] * p_t
+                        row_F = F[j][idx_x(j, i), :]
+                        KKT1_i += gp.quicksum(row_F[t]*p[t] for t in range(npar))
+                        
+                    if has_ineq_constraints:
+                        # A^T lam part: sum_k A[k,j] * lam_k
+                        # A is (nA, nx), so column j is A[:, j]
+                        col_Aj = A[Gj, idx_x(j, i)]
+                        KKT1_i += gp.quicksum(col_Aj[k]*lam[j][k] for k in range(nGj))
+
+                    if has_eq_constraints:
+                        # Aeq^T mu part: sum_k Aeq[k,j] * mu_k
+                        # Aeq is (nAeq, nx), so column j is Aeq[:, j]
+                        col_Aeqj = Aeq[Geqj, idx_x(j, i)]
+                        KKT1_i += gp.quicksum(col_Aeqj[k]*mu[j][k] for k in range(nGeqj))
+                    
+                    KKT1.append(KKT1_i)
+
+                m.addConstrs((KKT1[i] == 0. for i in range(dim[j])), name=f"KKT1_agent_{j}")
+
+            if has_ineq_constraints:
+                # (b) 0 <= lam(i,j) <= M * delta(j)
+                for j in range(N):
+                    ind_lam = 0
+                    for k in range(ncon):
+                        if G[k, j]:  # agent j involved in constraint k or vGNE
+                            m.addConstr(lam[j][ind_lam] <= M * delta[k], name=f"big-M-lam_{j}_constr_{k}")
+                            ind_lam += 1
+
+                # (c) b + S p - A x <= M (1-delta)
+                for i in range(ncon):
+                    m.addConstr(b[i] + gp.quicksum(S[i,t]*p[t] for t in range(npar) if has_params) - gp.quicksum(A[i,k]*x[k] for k in range(nx)) <= M * (1. - delta[i]), name=f"big-M-slack_constr_{i}")
+
+                # (d) A x <= b + S p
+                for i in range(ncon):
+                    m.addConstr(gp.quicksum(A[i,k]*x[k] for k in range(nx)) <= b[i] + gp.quicksum(S[i,t]*p[t] for t in range(npar) if has_params), name=f"shared_ineq_constr_{i}")
+
+            if has_eq_constraints:
+                # (d2) Aeq x - Seq p = beq
+                for i in range(nconeq):
+                    m.addConstr(gp.quicksum(Aeq[i,k]*x[k] for k in range(nx)) - gp.quicksum(Seq[i,t]*p[t] for t in range(npar) if has_params) == beq[i], name=f"shared_eq_constr_{i}")
+                    
+            if variational:
+                if has_ineq_constraints:
+                    # exclude box constraints, they have their own multipliers
+                    for j in range(ncon-nbox):
+                        # indices of agents involved in constraint j
+                        ii = np.argwhere(G[j, :])
+                        i1 = int(ii[0])  # first agent involved
+                        for k in range(1, len(ii)):  # loop not executed if only one agent involved
+                            i2 = int(ii[k])  # other agent involved
+                            m.addConstr(lam[i1][c_map[i1][j]] == lam[i2][c_map[i2][j]], name=f"variational_ineq_constr_{j}")
+                if has_eq_constraints:
+                    for j in range(nconeq):
+                        # indices of agents involved in constraint j
+                        ii = np.argwhere(Geq[j, :])
+                        i1 = int(ii[0])  # first agent involved
+                        for k in range(1, len(ii)):  # loop not executed if only one agent involved
+                            i2 = int(ii[k])  # other agent involved
+                            m.addConstr(mu[i1][ceq_map[i1][j]] == mu[i2][ceq_map[i2][j]], name=f"variational_eq_constr_{j}")
+
+            if has_pwa_objective:
+                # (e) eps[k] >= D[k](i,:) x + E[k](i,:) p + h[k](i), i=1..nk
+                for k in range(nJ):
+                    for i in range(D_pwa[k].shape[0]):
+                        m.addConstr(eps[k] >= gp.quicksum(D_pwa[k][i,t]*x[t] for t in range(nx)) + gp.quicksum(E_pwa[k][i,t]*p[t] for t in range(npar) if has_params) + h_pwa[k][i], name=f"pwa_obj_constr_{k}_{i}")
+                        row_Di = D_pwa[k][i, :]
+                        if has_params:
+                            row_Ei = E_pwa[k][i, :]
+
+                J_PWA = gp.quicksum(eps[k] for k in range(nJ)) # Define objective function term: min sum(eps)
+            else:
+                J_PWA = 0.0
+            
+            if has_quad_objective:
+                J_Q = 0.5 * gp.quicksum(Q_J[i, j] * (x[i] if i < nx else p[i - nx]) * (x[j] if j < nx else p[j - nx]) for i in range(nx + npar) for j in range(nx + npar)) + gp.quicksum(c_J[i] * (x[i] if i < nx else p[i - nx]) for i in range(nx + npar))
+            else:
+                J_Q = 0.0
+                
+            m.setObjective(J_PWA + J_Q, gp.GRB.MINIMIZE)
+                
+        self.mip = mip
         self.has_params = has_params
         self.has_ineq_constraints = has_ineq_constraints
         self.has_eq_constraints = has_eq_constraints
-        self.has_objective = has_objective
+        self.has_pwa_objective = has_pwa_objective
         self.nx = nx
         self.npar = npar
         self.ncon = ncon
@@ -1506,27 +1698,24 @@ class GNEP_LQ():
         self.Geq = Geq
         self.dim_lam = dim_lam
         self.dim_mu = dim_mu
-        self.idx_lam = idx_lam
-        self.idx_mu = idx_mu
-        self.idx_delta = idx_delta
-        self.idx_eps = idx_eps
         self.M = M
         self.lb = lb
         self.ub = ub
         self.nbox = nbox
         self.pmin = pmin
         self.pmax = pmax
-        if has_objective:
+        if has_pwa_objective:
             self.nJ = nJ
         else:
             self.nJ = 0
 
     def solve(self, max_solutions=1, verbose=0):
-        """Solve a linear quadratic generalized GNE problem and associated game-design problem via mixed-integer linear programming (MILP):
+        """Solve a linear quadratic generalized GNE problem and associated game-design problem via mixed-integer linear programming (MILP) or mixed-integer quadratic programming (MIQP):
 
             min_{x,p,y,lam,delta,eps} sum(eps[k])  (if D,E,h provided)
+                                      + 0.5 *[x;p]^T Q_J [x;p] + c_J^T [x;p]  (if Q_J,c_J provided)
             s.t.
-                eps[k] >= D[k](i,:) x + E[k](i,:) p + h[k](i), i=1,...,nk  (game design objective function)
+                eps[k] >= D_pwa[k](i,:) x + E_pwa[k](i,:) p + h_pwa[k](i), i=1,...,nk  
                 Q_ii x_i + c_i + F_i p + Q_{i(-i)} x(-i) + A_i^T lam_i + Aeq_i^T mu_i = 0 
                                                 (individual 1st KKT condition)
                 A x <= b + S  p                  (shared inequality constraints)
@@ -1538,10 +1727,12 @@ class GNEP_LQ():
                 lb <= x <= ub                    (variable bounds, possibly infinite)
                 pmin <= p <= pmax            
 
-        If D,E,h are None, the objective function is omitted, and only an equilibrium point is searched for. If pmin = pmax (or pmin,pmax are None), the problem reduces to finding a solution to a standard (non-parametric) GNEP-QP (or, in case infinitely many exist, the one
-        minimizing f(x,p). HiGHS's MILP solver is used to solve the problem.
+        If D_pwa, E_pwa, h_pwa, Q_J, and c_J are None, the objective function is omitted, and only an equilibrium point is searched for. If pmin = pmax (or pmin,pmax are None), the problem reduces to finding a solution to a standard (non-parametric) GNEP-QP (or, in case infinitely many exist, the one
+        minimizing f(x,p). The MILP solver specified during object construction is used to solve the problem.
 
-        When multiple solutions are searched for (max_solutions > 1), the MILP is solved multiple times, adding a "no-good" cut after each solution found to exclude it from the feasible set.
+        When multiple solutions are searched for (max_solutions > 1), the MIP is solved multiple times, adding a "no-good" cut after each solution found to exclude it from the feasible set.
+        
+        MILP is used when no quadratic objective function is specified, otherwise MIQP is used (only Gurobi supported). 
 
         Parameters
         ----------
@@ -1582,13 +1773,8 @@ class GNEP_LQ():
         Geq = self.Geq
         dim_lam = self.dim_lam
         dim_mu = self.dim_mu
-        idx_lam = self.idx_lam
-        idx_mu = self.idx_mu
-        idx_delta = self.idx_delta
-        idx_eps = self.idx_eps
-        pmin = self.pmin
 
-        inf = highspy.kHighsInf
+        pmin = self.pmin
 
         if not self.has_ineq_constraints and max_solutions > 1:
             print(
@@ -1596,9 +1782,18 @@ class GNEP_LQ():
             max_solutions = 1
 
         if verbose >= 1:
-            print("Solving MILP problem ...")
-        if verbose < 2:
-            self.milp.setOptionValue("log_to_console", False)
+            print("Solving MIP problem ...")
+
+        if self.solver == 'highs':
+            idx_lam = self.idx_lam
+            idx_mu = self.idx_mu
+            idx_delta = self.idx_delta
+            idx_eps = self.idx_eps
+            inf = highspy.kHighsInf
+            if verbose < 2:
+                self.mip.setOptionValue("log_to_console", False)
+        else:
+            self.mip.model.setParam('OutputFlag', verbose >=2)
 
         x = None
         p = None
@@ -1613,17 +1808,28 @@ class GNEP_LQ():
         while go and (found < max_solutions):
 
             t0 = time.time()
-            status = self.milp.run()
-            model_status = self.milp.getModelStatus()
-            status_str = self.milp.modelStatusToString(model_status)
+            
+            if self.solver == 'highs':
+                status = self.mip.run()
+                model_status = self.mip.getModelStatus()
+                status_str = self.mip.modelStatusToString(model_status)
+
+                if (status != highspy.HighsStatus.kOk) or (model_status != highspy.HighsModelStatus.kOptimal):
+                    go = False
+            else:
+                self.mip.model.optimize()
+                go = (self.mip.model.status == gp.GRB.OPTIMAL)
+                status_str = 'optimal solution found' if go else 'not solved'
+                
             t0 = time.time() - t0
 
-            if (status != highspy.HighsStatus.kOk) or (model_status != highspy.HighsModelStatus.kOptimal):
-                go = False
-            else:
+            if go:
                 found += 1
-                sol = self.milp.getSolution()
-                x_full = np.array(sol.col_value, dtype=float)
+                if self.solver == 'highs':
+                    sol = self.mip.getSolution()
+                    x_full = np.array(sol.col_value, dtype=float)
+                else:
+                    x_full = np.array(list(self.mip.model.getAttr('X', self.mip.x).values()))
 
                 if verbose == 1 and max_solutions > 1:
                     print(".", end="")
@@ -1633,19 +1839,29 @@ class GNEP_LQ():
                 # Extract slices
                 x = x_full[0:nx].reshape(-1)
                 if self.has_params:
-                    p = x_full[nx:nx+npar].reshape(-1)
+                    if self.solver == 'highs':
+                        p = x_full[nx:nx+npar].reshape(-1)
+                    else:
+                        p = np.array(list(self.mip.model.getAttr('X', self.mip.p).values()))
                 else:
                     p = pmin  # fixed p (or None)
 
                 if self.has_ineq_constraints:
-                    delta = x_full[idx_delta(0):idx_delta(ncon)].reshape(-1)
+                    if self.solver == 'highs':
+                        delta = x_full[idx_delta(0):idx_delta(ncon)].reshape(-1)
+                    else:
+                        delta = np.array(list(self.mip.model.getAttr('X', self.mip.delta).values()))
                     # Round delta to {0,1} just in case
                     delta = 0 + (delta > 0.5)
+                    
                     lam = []
                     for j in range(N):
                         lam_j = np.zeros(ncon)
-                        lam_j[G[:, j]] = x_full[idx_lam(
-                            j, 0):idx_lam(j, dim_lam[j])]
+                        if self.solver == 'highs':
+                            lam_j[G[:, j]] = x_full[idx_lam(
+                                j, 0):idx_lam(j, dim_lam[j])]
+                        else:
+                            lam_j[G[:, j]] = np.array(list(self.mip.model.getAttr('X', self.mip.lam[j]).values()))
                         lam_g = lam_j[:ncon - nbox]  # exclude box constraints
                         # add only multipliers for box constraints involving agent j
                         # Start with finite lower bounds
@@ -1661,12 +1877,18 @@ class GNEP_LQ():
                     mu = []
                     for j in range(N):
                         mu_j = np.zeros(nconeq)
-                        mu_j[Geq[:, j]] = x_full[idx_mu(
-                            j, 0):idx_mu(j, dim_mu[j])]
+                        if self.solver == 'highs':
+                            mu_j[Geq[:, j]] = x_full[idx_mu(
+                                j, 0):idx_mu(j, dim_mu[j])]
+                        else:
+                            mu_j[Geq[:, j]] = np.array(list(self.mip.model.getAttr('X', self.mip.mu[j]).values()))
                         mu.append(mu_j.reshape(-1))
 
-                if self.has_objective:
-                    eps = np.array(x_full[idx_eps(0):idx_eps(self.nJ)]).reshape(-1)
+                if self.has_pwa_objective:
+                    if self.solver == 'highs':
+                        eps = np.array(x_full[idx_eps(0):idx_eps(self.nJ)]).reshape(-1)
+                    else:
+                        eps = np.array(list(self.mip.model.getAttr('X', self.mip.eps).values()))
 
                 solutions.append(SimpleNamespace(x=x, p=p, lam=lam, delta=delta, mu=mu,
                                  eps=eps, status_str=status_str, G=G, Geq=Geq, elapsed_time=t0))
@@ -1674,14 +1896,19 @@ class GNEP_LQ():
                 if found < max_solutions:
                     # Append no-good constraint to exclude this delta in future iterations
                     # sum_{i: delta_k(i)=1} delta(i) - sum_{i: delta_k(i)=0} delta(i) <= -1 + sum(delta_k(i))
-                    indices = np.array([idx_delta(k)
-                                       for k in range(ncon)], dtype=np.int64)
-                    values = np.ones(ncon, dtype=np.double)
-                    values[delta < 0.5] = -1.0
-                    lower = -inf
-                    upper = np.sum(delta) - 1.
-                    self.milp.addRow(lower, upper, len(
-                        indices), indices, values)
+                    if self.solver == 'highs':
+                        indices = np.array([idx_delta(k)
+                                        for k in range(ncon)], dtype=np.int64)
+                        values = np.ones(ncon, dtype=np.double)
+                        values[delta < 0.5] = -1.0
+                        lower = -inf
+                        upper = np.sum(delta) - 1.
+                        self.mip.addRow(lower, upper, len(
+                            indices), indices, values)
+                    else:
+                        self.mip.model.addConstr(
+                            gp.quicksum(self.mip.delta[k] if delta[k] > 0.5 else -self.mip.delta[k] for k in range(ncon)) <= - 1. + np.sum(delta),
+                            name=f"no_good_cut_{found}")
 
         if verbose == 1:
             print(f" done. {found} combinations found")
@@ -1911,6 +2138,8 @@ class NashLinearMPC():
             Upper bound on input increments. If None, no upper bound is applied.
         Qeps : float, list, or None, optional
             List of slack variable penalties for each agent. If None, a default value of 1.e3 is used for all agents.
+        Tc : int, optional
+            Constraint horizon. If None, constraints are applied over the entire prediction horizon T.
         """
 
         self.sizes = sizes
@@ -2180,8 +2409,40 @@ class NashLinearMPC():
             off += T*si + 1  # Each agent optimizes du_i(0)..du_i(T-1), eps_i
         self.iperm = np.argsort(perm)  # inverse permutation
 
-    def solve(self, x0, u1, ref, M=1.e4, variational=False, centralized=False):
+    def solve(self, x0, u1, ref, M=1.e4, variational=False, centralized=False, solver='highs'):
         """Solve game-theoretic linear MPC problem for a given reference via MILP.
+        
+        Parameters
+        ----------
+        x0 : ndarray
+            Current state vector x(t).
+        u1 : ndarray
+            Previous input vector u(t-1).
+        ref : ndarray
+            Reference output vector r(t) to track.
+        M : float, optional
+            Big-M parameter for MILP formulation.
+        variational : bool, optional
+            If True, compute a variational equilibrium by adding the necessary equality constraints on the multipliers of the shared output constraints. 
+        centralized : bool, optional
+            If True, solve a centralized MPC problem via QP instead of the game-theoretic one via MILP.
+        solver : str, optional
+            MILP solver to use ('highs' or 'gurobi').
+            
+        Returns
+        -------
+        sol : SimpleNamespace
+            Solution object with the following fields:
+            - u : ndarray
+                First input of the optimal sequence to apply to the system as input u(t).
+            - U : ndarray
+                Full input sequence over the prediction horizon.
+            - eps : ndarray
+                Optimal slack variables for soft output constraints.
+            - elapsed_time : float
+                Total elapsed time (build + solve) in seconds.
+            - elapsed_time_solver : float
+                Elapsed time for solver only in seconds.
         """
         T = self.T
         # each agent's variable is [du_i(0); ...; du_i(T-1); eps_i]
@@ -2199,7 +2460,7 @@ class NashLinearMPC():
         if not centralized:
             # Set up and solve GNEP via MILP
             gnep = GNEP_LQ(sizes, self.H, c, F=None, lb=self.lb, ub=self.ub, pmin=None, pmax=None,
-                           A=self.A_con, b=b, S=None, D=None, E=None, h=None, M=M, variational=variational)
+                           A=self.A_con, b=b, S=None, D=None, E=None, h=None, M=M, variational=variational, solver=solver)
         else:
             # Centralized MPC: total cost = sum of all agents' costs, solve via QP
             H_cen = csc_matrix(sum(self.H[i] for i in range(self.N)))

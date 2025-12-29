@@ -89,7 +89,7 @@ $$
 y_{i,k} \, (u_{i,k} - x_{i,k}) = 0
 $$
 
-In `nashopt`, primal feasibility (with respect to inequalities), dual feasibility, and complementary slackness conditions, which can be summarized as complementarity pairs $0\leq a\perp b\geq 0$, are enforced by using the nonlinear complementarity problem (NCP) Fischer–Burmeister function [1]
+For general nonlinear problems, in `nashopt` primal feasibility (with respect to inequalities), dual feasibility, and complementary slackness conditions, which can be summarized as complementarity pairs $0\leq a\perp b\geq 0$, are enforced by using the nonlinear complementarity problem (NCP) Fischer–Burmeister function [1]
 
 $$
 \phi(a, b) = \sqrt{a^2 + b^2} - a - b
@@ -243,13 +243,13 @@ gnep = GNEP( ... , variational=True)
 To decide the nonlinear least-squares solver used to compute the GNEP, use the following call:
 
 ```python
-sol = gnep.solve(x0, method = "trf")
+sol = gnep.solve(x0, solver = "trf")
 ```
 
 or
 
 ```python
-sol = gnep.solve(x0, method = "lm")
+sol = gnep.solve(x0, solver = "lm")
 ```
 
 where `trf` calls a trust-region reflective algorithm, while `lm` a Levenberg-Marquardt method.
@@ -327,6 +327,62 @@ sol = pgnep.solve(J, pmin, pmax, alpha1=alpha1, alpha2=alpha2)
 ```
 
 You can specify two further flags: `gne_warm_start`, to warm-start the optimization by computing first a GNE, and `refine_gne`, to try getting a GNE after solving the problem by refining the solution $x$ for the optimal parameter $p$ found.
+
+## Linear-Quadratic Games
+When the agents' cost functions are quadratic and convex with respect to $x_i$ and all the constraints are linear, i.e.,
+
+$$
+\begin{array}{rrl}
+    \min_{p, x^\star} \quad & J(x^\star,p)\\
+    \text{s.t. } & x^\star_i\in \arg\min_{x_i} &f_i(x,p)=\frac{1}{2} x^\top Q^i x + (c^i + F^i p)^\top x \\
+    & \text{s.t. } & A x \leq b + S p\\ 
+    &&A_{\mathrm{eq}} x = b_{\mathrm{eq}} + S_{\mathrm{eq}} p \\
+    &&\ell_i \leq x \leq u_i\\
+    &&x_{-i} = x^\star_{-i}\\
+    && i=1,\dots,N
+\end{array}
+$$
+
+the equilibrium conditions can be expressed as a mixed-integer linear program (MILP) using a "big-M" approach. `nashopt` support both the open-source solver `HiGHS` and `Gurobi` to solve the MILP. 
+
+Example:
+
+```python
+from nashopt import GNEP_LQ
+
+gnep = GNEP_LQ(sizes, Q, c, F, lb=lb, ub=ub, pmin=pmin,
+               pmax=pmax, A=A, b=b, S=S, M=1e4, variational=variational, solver='highs')
+sol = gnep.solve()
+x = sol.x
+```
+
+We can also extract multiple solutions, if any exist, that correspond to different combinations of active constraints at optimality. For example, to get a list of the first 10 solutions:
+
+```python
+sol = gnep.solve(max_solutions=10)
+```
+
+In addition, a game objective $J$ can be given as the (sum of) convex piecewise affine function(s)
+
+$$
+J(x,p) = \sum_{j=1}^{n_J}\max_{k=1,\dots,n_j} D^{PWA}_{jk} x + E^{PWA}_{jk} p + h^{PWA}_{jk}
+$$
+
+```python
+    gnep_lq = GNEP_LQ(sizes, ... D_pwa=D_pwa, E_pwa=E_pwa, h_pwa=h_pwa, ...)
+```
+
+and the optimal parameters $p$ are also determined by MILP, or as the convex quadratic function
+        
+$$
+                    f(x,p) = \frac{1}{2} [x^T\ p^T] Q_J \left[\begin{array}{c}x\\p\end{array}\right] + c_J^T \left[\begin{array}{c}x\\p\end{array}\right]
+$$
+
+```python
+    gnep_lq = GNEP_LQ(sizes, ... Q_J=Q_J, c_J=c_J, ...)
+```
+
+or the sum of both, where in this case the optimal parameters $p$ are determined by MIQP (only Gurobi supported).
 
 ## Game-Theoretic Control
 We consider non-cooperative multi-agent control problems where each agent only controls a subset of the input vector $u$ of a discrete-time linear dynamical system 
@@ -411,6 +467,19 @@ For comparison, you can compute instead the *centralized* MPC move, where the co
 sol = nash_mpc.solve(x, u1, r, centralized=True)
 u = sol.u
 ```
+
+To specify the MILP solver to use to compute the game-theoretic MPC law, use the following:
+
+```python
+sol = nash_mpc.solve(x0, u1, ref, ..., solver='highs')
+```
+
+or
+
+```python
+sol = nash_mpc.solve(x0, u1, ref, ..., solver='gurobi')
+```
+
 
 ## References
 

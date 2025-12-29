@@ -82,7 +82,8 @@ for case in range(2):
         X.append(x)
         Y.append(C@x)
         sol = nash_mpc.solve(
-            x, u1, ref, variational=variational, centralized=centralized)
+            x, u1, ref, variational=variational, centralized=centralized, solver='highs')
+            # use 'gurobi' if you have a license, which is faster
         uk = sol.u
         u1 = uk
         U.append(uk)
@@ -118,4 +119,4 @@ for case in range(2):
     ax[1].set_xlabel('time step $t$')
     plt.show()
     plt.savefig(
-        f"/Users/bemporad/Alberto/Lavori/Optimization/Nash_Game_Theory/NashOpt/latex/figures/example_linear_MPC_{'nash' if not centralized else 'centralized'}.pdf", bbox_inches='tight')
+        f"example_linear_MPC_{'nash' if not centralized else 'centralized'}.pdf", bbox_inches='tight')

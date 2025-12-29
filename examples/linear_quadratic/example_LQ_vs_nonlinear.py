@@ -55,7 +55,7 @@ for test in range(2):
         S = np.random.randn(ncon, npar)
 
     gnep = GNEP_LQ(sizes, Q, c, F, lb=lb, ub=ub, pmin=pmin,
-                   pmax=pmax, A=A, b=b, S=S, M=1e4, variational=variational)
+                   pmax=pmax, A=A, b=b, S=S, M=1e4, variational=variational, solver='highs')
     sol = gnep.solve()
     print("HiGHS status:", sol.status_str)
     x = sol.x
