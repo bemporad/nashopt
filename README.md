@@ -488,10 +488,11 @@ sol = nash_mpc.solve(x0, u1, ref, ..., solver='gurobi')
 ## Citation
 
 ```
-@misc{nashopt,
+@article{NashOpt,
     author={A. Bemporad},
     title={{NashOpt}: A {Python} Library for Computing Generalized {Nash} Equilibria and Game Design},
-    howpublished = {\url{https://github.com/bemporad/nashopt}},
+    journal = {arXiv preprint 2512.23636},
+    note = {\url{https://github.com/bemporad/nashopt}},
     year=2025
 }
 ```
