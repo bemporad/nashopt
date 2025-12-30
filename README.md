@@ -419,13 +419,12 @@ You can retrieve extra information after solving the Nash equilibrium problem, s
 We now want to make the output vector $y(t)$ of the system track a given setpoint $r(t)$.
 Each agent optimizes a sequence of input increments 
 $\Delta u_{i,k}$, $k=0,\ldots,T-1$,
-over a prediction horizon of $T$ steps, where $\Delta u_k=u_k-u_{k-1}$, by solving:
+over a prediction horizon of $T$ steps, where $\Delta u_k=u_k-u_{k-1}$, by minimizing
 
 $$
-\min \sum_{k=0}^{T-1}
-( (y_{k+1}-r(t))^\top Q_i (y_{k+1}-r(t))
-      + \Delta u_{i,k}^\top Q_{\Delta u,i}\Delta u_{i,k} )
-+ q_{\epsilon,i}^\top \epsilon_i
+q_{\epsilon,i}^\top \epsilon_i + 
+\sum_{k=0}^{T-1} (y_{k+1}-r(t))^\top Q_i (y_{k+1}-r(t))
+      + \Delta u_{i,k}^\top Q_{\Delta u,i}\Delta u_{i,k}
 $$
 
 $$
