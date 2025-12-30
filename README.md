@@ -5,6 +5,9 @@
 
 This repository includes a library for solving different classes of nonlinear **Generalized Nash Equilibrium Problems** (GNEPs). The decision variables and Lagrange multipliers that jointly satisfy the KKT conditions for all agents are determined by solving a nonlinear least-squares problem. If a zero residual is obtained, this corresponds to a potential generalized Nash equilibrium, a property that can be verified by evaluating the individual **best responses**. For the special case of **Linear-Quadratic Games**, one or more equilibria are obtained by solving mixed-integer linear programming problems. The package can also solve **game-design** problems by optimizing the parameters of a **multiparametric GNEP** by box-constrained nonlinear optimization, as well as **game-theoretic control** problems, such as **Linear Quadratic Regulation** and **Model Predictive Control** problems.
 
+For more details about the mathematical formulations implemented in the library, see the 
+<a href="https://arxiv.org/abs/2512.23636">arXiv preprint 2512.23636</a>.
+
 ---
 ## Installation
 
@@ -417,7 +420,7 @@ We now want to make the output vector $y(t)$ of the system track a given setpoin
 Each agent optimizes a sequence of input increments $\{\Delta u_{i,k}\}_{k=0}^{T-1}$ over a prediction horizon of $T$ steps, where $\Delta u_k=u_k-u_{k-1}$, by solving:
 
 $$
-\Delta u_i,\epsilon_i \in\arg\min \sum_{k=0}^{T-1}
+\Delta u_i,\epsilon_i \in \textrm{arg min} \sum_{k=0}^{T-1}
 \left( (y_{k+1}-r(t))^\top Q_i (y_{k+1}-r(t))
       + \Delta u_{i,k}^\top Q_{\Delta u,i}\Delta u_{i,k}\right)
 + q_{\epsilon,i}^\top \epsilon_i
@@ -434,6 +437,7 @@ $$
 & i=1,\ldots,N,\ k=0,\ldots,T-1. 
 \end{array}
 $$
+
 where $Q_i\succeq 0$, $Q_{\Delta u,i}\succeq 0$ and $\epsilon_i\geq 0$ is a slack variable
 used to soften shared output constraints (with linear penalty $q_{\epsilon,i}\geq 0$). Each agent's MPC problem can be simplified by imposing the constraints only on a shorter constraint horizon of $T_c<T$ steps.
 
