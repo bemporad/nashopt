@@ -292,6 +292,7 @@ of finding a vector $p$ (if one exists) such that $x^\star\approx x_{\textrm des
 $$J(x^\star,p)=\|x^\star-x_{\rm des}\|_2^2.$$
 
 We solve the game-design problem as
+
 $$
 \begin{aligned}
     \min_{z,p}\quad & J(x,p) + \frac{\rho}{2}\|R(z,p)\|_2^2\\
