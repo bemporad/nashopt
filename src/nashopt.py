@@ -1935,8 +1935,8 @@ class NashLQR():
 
         subject to dynamics x(k+1) = (A -B_{-i}K_{-i})x(k) + B_i u_i(k).
 
-        The LQR cost is solved by approximating the infinite-horizon cost by a finite-horizon cost using "dare_iters" fixed-point iterations.
-
+        The Nash equilibrium is found by letting agent i minimize the difference between K_i and the LQR gain K_i for the dynamics (A -B_{-i}K_{-i}, B_i). The LQR gain is computed approximately by evaluating the LQ cost over "dare_iters" time steps. The method is initialized from the centralized LQR solution with matrix Q=sum(Q_i) and R=block_diag(R_1, ..., R_N), obtained by "dare_iters" Riccati iterations.
+        
         (C) 2025 Alberto Bemporad, December 20, 2025
         """
         self.sizes = sizes
@@ -1978,7 +1978,7 @@ class NashLQR():
             not_i.append(list(range(sum_i[i-1])) + list(range(sum_i[i], nu)))
         self.not_i = not_i
         self.ii = [list(range(sum_i[i]-sizes[i], sum_i[i])) for i in range(N)]
-
+        
     def solve(self, **kwargs):
         """Solve the Nash-LQR game.
 
@@ -1988,6 +1988,7 @@ class NashLQR():
         """
 
         dare_iters = self.dare_iters
+        sol = SimpleNamespace()
 
         @jax.jit
         def jax_dare(A, B, Q, R):
@@ -2027,6 +2028,22 @@ class NashLQR():
             K_final = get_K(X_final, A, B, R)
             return X_final, K_final
 
+        # Initial guess = centralized LQR
+        nu = self.nu
+        bigR = block_diag(*self.R)
+        bigQ = sum(self.Q[i] for i in range(self.N))
+        _, K_cen = jax_dare(self.A, self.B, bigQ, bigR)
+        # # Check for comparison using python control library
+        # from control import dare
+        # P1, _, K1 = dare(A, B, bigQ, bigR)
+        # print("Max difference between LQR gains: ", np.max(np.abs(K_cen - K1)))
+        # print("Max difference between Riccati matrices: ", np.max(np.abs(P - P1)))
+
+        sol.K_centralized = K_cen
+        self.jax_dare = jax_dare  # store for possible later use outside solve()
+
+        print("Solving Nash-LQR problem ... ", end='')
+
         @partial(jax.jit, static_argnums=(1,))  # i is static
         def lqr_fun(K_flat, i, A, B, Q, R):
             K = K_flat.reshape(self.nu, self.nx)
@@ -2039,37 +2056,19 @@ class NashLQR():
         f = []
         for i in range(self.N):
             f.append(partial(lqr_fun, i=i, A=self.A,
-                     B=self.B, Q=self.Q, R=self.R))
+                    B=self.B, Q=self.Q, R=self.R))
 
         # each agent's variable is K_i (size[i] x nx) flattened
         sizes = [self.sizes[i]*self.nx for i in range(self.N)]
         gnep = GNEP(sizes, f=f)
 
-        # Initial guess = centralized LQR
-        nu = self.nu
-        bigR = block_diag(*self.R)
-        bigQ = sum(self.Q[i] for i in range(self.N))
-        _, K_cen = jax_dare(self.A, self.B, bigQ, bigR)
-
-        # # Check for comparison using python control library
-        # from control import dare
-        # P1, _, K1 = dare(A, B, bigQ, bigR)
-        # print("Max difference between LQR gains: ", np.max(np.abs(K_cen - K1)))
-        # print("Max difference between Riccati matrices: ", np.max(np.abs(P - P1)))
-
-        print("Solving Nash-LQR problem ... ", end='')
-
         K0 = K_cen.flatten()
-        sol = gnep.solve(x0=K0, **kwargs)
-        K_Nash, residual, stats = sol.x, sol.res, sol.stats
+        sol_residual = gnep.solve(x0=K0, **kwargs)
+        K_Nash, residual, stats = sol_residual.x, sol_residual.res, sol_residual.stats
         print("done.")
-        K_Nash = K_Nash.reshape(nu, self.nx)
-
-        sol = SimpleNamespace()
-        sol.K_Nash = K_Nash
+        sol.K_Nash = K_Nash.reshape(nu, self.nx)
         sol.residual = residual
         sol.stats = stats
-        sol.K_centralized = K_cen
         return sol
 
 

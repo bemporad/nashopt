@@ -126,3 +126,7 @@ ax[0].grid()
 ax[1].grid()
 plt.show()
 plt.savefig("example_LQR.pdf", bbox_inches='tight')
+
+_, K1 = nash_lqr.jax_dare(A-B[:,1:]@K_Nash[1:,:], B[:,0].reshape(-1,1), Q[0], R[0])
+print(f"First agent's gain from GNE-residual method: {K_Nash[0,:]}")
+print(f"First agent's gain from JAX DARE solver:     {K1.reshape(-1)}")
