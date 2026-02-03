@@ -19,7 +19,7 @@ mpl.rcParams.update({
     "ytick.labelsize": 20,
 })
 
-np.random.seed(0)
+np.random.seed(1)
 
 t0 = time.time()
 
@@ -33,7 +33,7 @@ nvar = sum(sizes)
 
 # Random unstable dynamics
 A = np.random.rand(nx,nx) # random A, possibly unstable
-A = A / max(abs(np.linalg.eigvals(A)))*1.1  # scale to have spectral radius = 1.1
+A = A / max(abs(np.linalg.eigvals(A)))*1.1 # scale to have spectral radius = 1.1
 B = np.random.randn(nx, nu*N)
 
 Q=[]
@@ -52,7 +52,7 @@ for i in range(N):
     R.append(Ri)   
 
 nash_lqr = NashLQR(sizes, A, B, Q, R, dare_iters=dare_iters)
-sol = nash_lqr.solve(verbose=2)
+sol = nash_lqr.solve(method = 'residual', verbose=2)
 
 K_Nash = sol.K_Nash
 residual = sol.residual
@@ -70,7 +70,7 @@ else:
     
 print(f"KKT residual norm:   {res: 10.7g}")
 print(f"KKT evaluations:     {int(stats.kkt_evals): 3d}")
-print(f"Elapsed time:        {time.time() - t0: .2f} seconds")
+print(f"Elapsed time:        {stats.elapsed_time: .2f} seconds")
 
 # Check stability of closed-loop system with Nash gains
 rad_nash = np.abs(np.linalg.eigvals(A - B @ K_Nash)[0])
@@ -125,8 +125,16 @@ ax[1].set_xlabel('time step $t$')
 ax[0].grid()
 ax[1].grid()
 plt.show()
-plt.savefig("example_LQR.pdf", bbox_inches='tight')
+#plt.savefig("example_LQR.pdf", bbox_inches='tight')
 
-_, K1 = nash_lqr.jax_dare(A-B[:,1:]@K_Nash[1:,:], B[:,0].reshape(-1,1), Q[0], R[0])
+K1 = nash_lqr.dare(agent=0)
 print(f"First agent's gain from GNE-residual method: {K_Nash[0,:]}")
 print(f"First agent's gain from JAX DARE solver:     {K1.reshape(-1)}")
+
+# Now solve using the Riccati-based method
+sol2 = nash_lqr.solve(method = 'riccati')
+K_Nash2 = sol2.K_Nash
+print(f"First agent's gain from Riccati-based method: {K_Nash2[0,:]}")
+print(f"Elapsed time:        {sol2.stats.elapsed_time: .2f} seconds, {int(sol2.stats.riccati_iters)} Riccati iterations")
+print(f"Difference between the two methods' gains: {np.linalg.norm(K_Nash - K_Nash2):.4g}")
+
