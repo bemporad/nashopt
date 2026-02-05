@@ -19,7 +19,7 @@ mpl.rcParams.update({
     "ytick.labelsize": 20,
 })
 
-np.random.seed(1)
+np.random.seed(0)
 
 t0 = time.time()
 

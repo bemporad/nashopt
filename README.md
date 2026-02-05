@@ -415,6 +415,16 @@ where `sizes` contains the input sizes $[n_1,\ldots,n_N]$, $Q=[Q_1,\ldots,Q_N]$ 
 
 You can retrieve extra information after solving the Nash equilibrium problem, such as the KKT residual `sol.residual`, useful to verify whether an equilibrium was found, the centralized LQR gain `sol.K_centralized` (for comparison), and other statistics `sol.stats=stats`.
 
+By default, the Nash equilibrium is found by letting agent $i$ minimize the difference between $K_i$ and the LQR gain for the dynamics $(A -B_{-i}K_{-i}, B_i)$. 
+
+```python
+nash_lqr = NashLQR(sizes, A, B, Q, R, dare_iters=dare_iters, method='riccati', riccati_iters=100, stop_tol=1e-5)
+```
+
+solve instead the coupled discrete-time algebraic Riccati equations using `riccati_iters` Riccati-based iterations (best responses) as described in [1, Section III.B], until convergence within `stop_tol`.
+
+[1] B. Nortman, A. Monti, M. Sassano, T. Mylvaganam, "Nash Equilibria for Linear Quadratic
+Discrete-Time Dynamic Games via Iterative and Data-Driven Algorithms", IEEE Trans. Autom. Contr., vol. 69, no. 10, October 2024.
 
 ### Game-Theoretic Model Predictive Control
 We now want to make the output vector $y(t)$ of the system track a given setpoint $r(t)$.

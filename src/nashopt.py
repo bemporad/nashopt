@@ -1230,31 +1230,6 @@ class GNEP_LQ():
             dim_mu = None
             Geq = None
             
-        if variational:
-            if has_ineq_constraints:
-                # Find mapping from multiplier index to original constraint index for shared inequalities
-                c_map = []
-                for i in range(N):
-                    c_map_j = np.zeros(ncon-nbox, dtype=int)
-                    k = 0  # index of multiplier for agent i
-                    for j in range(ncon-nbox):
-                        if G[j, i]:
-                            # constraint j involves agent i -> this corresponds to lam(i,k)
-                            c_map_j[j] = k
-                    c_map.append(c_map_j)
-
-            if has_eq_constraints:
-                # Find mapping from multiplier index to original constraint index for shared equalities
-                ceq_map = []
-                for i in range(N):
-                    ceq_map_j = np.zeros(nconeq, dtype=int)
-                    k = 0  # index of multiplier for agent i
-                    for j in range(nconeq):
-                        if Geq[j, i]:
-                            # constraint j involves agent i -> this corresponds to mu(i,k)
-                            ceq_map_j[j] = k
-                    ceq_map.append(ceq_map_j)
-
         # Variable index ranges in the *single* Highs column space (j=agent index)
         # [ x (0..nx-1) | p (nx..nx+npar-1) | y | lam | delta ]
         def idx_x(j, i): return cum_dim_x[j] + i
@@ -1480,15 +1455,15 @@ class GNEP_LQ():
                                 np.array(values, dtype=np.double))
             if variational:
                 if has_ineq_constraints:
-                    # exclude box constraints, they have their own multipliers
+                    # exclude box constraints, they have their own multipliers. Shared constraints are first, indexed 0, ..., ncon-nbox-1
                     for j in range(ncon-nbox):
                         # indices of agents involved in constraint j
                         ii = np.argwhere(G[j, :])
                         i1 = int(ii[0])  # first agent involved
                         for k in range(1, len(ii)):  # loop not executed if only one agent involved
                             i2 = int(ii[k])  # other agent involved
-                            indices = [idx_lam(i1, c_map[i1][j]),
-                                    idx_lam(i2, c_map[i2][j])]
+                            indices = [idx_lam(i1, j),
+                                    idx_lam(i2, j)]
                             num_nz = 2
                             values = [1.0, -1.0]
                             mip.addRow(0.0, 0.0, num_nz, np.array(indices, dtype=np.int64),
@@ -1501,8 +1476,8 @@ class GNEP_LQ():
                         i1 = int(ii[0])  # first agent involved
                         for k in range(1, len(ii)):  # loop not executed if only one agent involved
                             i2 = int(ii[k])  # other agent involved
-                            indices = [idx_mu(i1, ceq_map[i1][j]),
-                                    idx_mu(i2, ceq_map[i2][j])]
+                            indices = [idx_mu(i1, j),
+                                    idx_mu(i2, j)]
                             num_nz = 2
                             values = [1.0, -1.0]
                             mip.addRow(0.0, 0.0, num_nz, np.array(indices, dtype=np.int64),
@@ -1646,14 +1621,14 @@ class GNEP_LQ():
                     
             if variational:
                 if has_ineq_constraints:
-                    # exclude box constraints, they have their own multipliers
+                    # exclude box constraints, they have their own multipliers. Shared constraints are first, indexed 0, ..., ncon-nbox-1
                     for j in range(ncon-nbox):
                         # indices of agents involved in constraint j
                         ii = np.argwhere(G[j, :])
                         i1 = int(ii[0])  # first agent involved
                         for k in range(1, len(ii)):  # loop not executed if only one agent involved
                             i2 = int(ii[k])  # other agent involved
-                            m.addConstr(lam[i1][c_map[i1][j]] == lam[i2][c_map[i2][j]], name=f"variational_ineq_constr_{j}")
+                            m.addConstr(lam[i1][j] == lam[i2][j], name=f"variational_ineq_constr_{j}")
                 if has_eq_constraints:
                     for j in range(nconeq):
                         # indices of agents involved in constraint j
@@ -1661,7 +1636,7 @@ class GNEP_LQ():
                         i1 = int(ii[0])  # first agent involved
                         for k in range(1, len(ii)):  # loop not executed if only one agent involved
                             i2 = int(ii[k])  # other agent involved
-                            m.addConstr(mu[i1][ceq_map[i1][j]] == mu[i2][ceq_map[i2][j]], name=f"variational_eq_constr_{j}")
+                            m.addConstr(mu[i1][j] == mu[i2][j], name=f"variational_eq_constr_{j}")
 
             if has_pwa_objective:
                 # (e) eps[k] >= D[k](i,:) x + E[k](i,:) p + h[k](i), i=1..nk
