@@ -1459,9 +1459,9 @@ class GNEP_LQ():
                     for j in range(ncon-nbox):
                         # indices of agents involved in constraint j
                         ii = np.argwhere(G[j, :])
-                        i1 = int(ii[0])  # first agent involved
+                        i1 = int(ii[0].item())  # first agent involved
                         for k in range(1, len(ii)):  # loop not executed if only one agent involved
-                            i2 = int(ii[k])  # other agent involved
+                            i2 = int(ii[k].item())  # other agent involved
                             indices = [idx_lam(i1, j),
                                     idx_lam(i2, j)]
                             num_nz = 2
@@ -1473,9 +1473,9 @@ class GNEP_LQ():
                     for j in range(nconeq):
                         # indices of agents involved in constraint j
                         ii = np.argwhere(Geq[j, :])
-                        i1 = int(ii[0])  # first agent involved
+                        i1 = int(ii[0].item())  # first agent involved
                         for k in range(1, len(ii)):  # loop not executed if only one agent involved
-                            i2 = int(ii[k])  # other agent involved
+                            i2 = int(ii[k].item())  # other agent involved
                             indices = [idx_mu(i1, j),
                                     idx_mu(i2, j)]
                             num_nz = 2
@@ -1625,17 +1625,17 @@ class GNEP_LQ():
                     for j in range(ncon-nbox):
                         # indices of agents involved in constraint j
                         ii = np.argwhere(G[j, :])
-                        i1 = int(ii[0])  # first agent involved
+                        i1 = int(ii[0].item())  # first agent involved
                         for k in range(1, len(ii)):  # loop not executed if only one agent involved
-                            i2 = int(ii[k])  # other agent involved
+                            i2 = int(ii[k].item())  # other agent involved
                             m.addConstr(lam[i1][j] == lam[i2][j], name=f"variational_ineq_constr_{j}")
                 if has_eq_constraints:
                     for j in range(nconeq):
                         # indices of agents involved in constraint j
                         ii = np.argwhere(Geq[j, :])
-                        i1 = int(ii[0])  # first agent involved
+                        i1 = int(ii[0].item())  # first agent involved
                         for k in range(1, len(ii)):  # loop not executed if only one agent involved
-                            i2 = int(ii[k])  # other agent involved
+                            i2 = int(ii[k].item())  # other agent involved
                             m.addConstr(mu[i1][j] == mu[i2][j], name=f"variational_eq_constr_{j}")
 
             if has_pwa_objective:
