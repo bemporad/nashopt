@@ -20,7 +20,7 @@ nvar = np.sum(sizes)
 
 @jax.jit
 def cost(x, i):
-    # Cost function minimized by agent #i, i=0,...,n-1
+    # Cost function minimized by agent #i, i=0,...,N-1
     ci = N*(1.+i/2.)
     return ci*x[i]-x[i]*(60.*N-jnp.sum(x))
 

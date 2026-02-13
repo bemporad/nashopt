@@ -496,6 +496,21 @@ or
 sol = nash_mpc.solve(x0, u1, ref, ..., solver='gurobi')
 ```
 
+Additional hard linear shared constraint of the form
+
+$$A_{cx} x(t)+A_{cu} u(t) + A_{cdu} \Delta u(t)\leq b_c$$
+
+can be imposed at the initial prediction step $k=0$ at each time $t$ as follows:
+
+```python
+nash_mpc = NashLinearMPC(..., Acx = Acx, Acu = Acu, Acdu = Acdu, bc = bc)
+```
+
+The right-hand-side $b_c$ of the constraint can be updated at run time when calling the solver:
+
+```python
+sol = nash_mpc.solve(..., bc = bc)
+```
 
 ## References
 

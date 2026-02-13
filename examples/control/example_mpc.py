@@ -54,8 +54,21 @@ for i in range(N):
     Qdui = .5
     Qdu.append(Qdui)
 
+add_xu_constraint = False # set to True to test additional polyhedral constraints on the initial state and input
+
+if add_xu_constraint:
+    # Add constraints on the initial state and input (optional)
+    Acx = np.array([[1., 0., 0., 0., 0., 0.]])
+    Acu = np.ones((1, nu))
+    Acdu = np.zeros((1, nu))
+    bc = np.array([5.])
+    fig_c, ax_c = plt.subplots(1, 1, figsize=(8, 4))
+else:
+    Acx, Acu, Acdu, bc = None, None, None, None
+
 nash_mpc = NashLinearMPC(sizes, A, B, C, Qy, Qdu, T, ymin=ymin, ymax=ymax,
-                         umin=umin, umax=umax, dumin=dumin, dumax=dumax, Qeps=Qeps, Tc=Tc)
+                         umin=umin, umax=umax, dumin=dumin, dumax=dumax, Qeps=Qeps, Tc=Tc,
+                         Acx=Acx, Acu=Acu, Acdu=Acdu, bc=bc)
 
 Tsim = 40  # number of closed-loop simulation steps
 x0 = np.zeros(nx)
@@ -72,7 +85,7 @@ for case in range(2):
         centralized = True
         print("Centralized MPC")
     cpu_build_time = []
-    X = [x0]
+    X = []
     Y = []
     U = []
     T_tot = []
@@ -82,7 +95,7 @@ for case in range(2):
         X.append(x)
         Y.append(C@x)
         sol = nash_mpc.solve(
-            x, u1, ref, variational=variational, centralized=centralized, solver='highs')
+            x, u1, ref, variational=variational, centralized=centralized, solver='highs', bc=bc)
             # use 'gurobi' if you have a license, which is faster
         uk = sol.u
         u1 = uk
@@ -120,3 +133,11 @@ for case in range(2):
     plt.show()
     plt.savefig(
         f"example_linear_MPC_{'nash' if not centralized else 'centralized'}.pdf", bbox_inches='tight')
+
+    if add_xu_constraint:
+        ax_c.plot(time, (Acx@X.T+Acu@U.T+Acdu@(np.diff(np.vstack((u1.T,U)), axis=0).T)).reshape(-1), color=colors[case], linewidth=4, label=f'linear constraint ({"game-theoretic" if not centralized else "centralized"})')
+        if case==1:
+            ax_c.plot(time, bc*np.ones(Tsim), '--', color=colors[2], linewidth=2)
+            ax_c.legend(loc='lower right')
+            ax_c.grid()
+            plt.show()

@@ -1890,6 +1890,10 @@ class GNEP_LQ():
 
         if len(solutions) == 1:
             return solutions[0]
+        elif len(solutions) == 0:
+            if verbose == 1:
+                print(" done. No solution found")
+            return None
         else:
             return solutions
 
@@ -2125,12 +2129,12 @@ class NashLQR():
 
 
 class NashLinearMPC():
-    def __init__(self, sizes, A, B, C, Qy, Qdu, T, ymin=None, ymax=None, umin=None, umax=None, dumin=None, dumax=None, Qeps=None, Tc=None):
+    def __init__(self, sizes, A, B, C, Qy, Qdu, T, ymin=None, ymax=None, umin=None, umax=None, dumin=None, dumax=None, Qeps=None, Tc=None, Acx=None, Acu=None, Acdu=None, bc=None):
         """Set up a game-theoretic linear MPC problem with N agents for set-point tracking. 
 
         The dynamics are given by
 
-            x(t+1) = A x(t) + B u (t)
+              x(t+1) = A x(t) + B u (t)
                 y(t) = C x(t)
                 u(t) = u(t-1) + du(t)
 
@@ -2156,6 +2160,8 @@ class NashLinearMPC():
         If variational=True at solution time, a variational equilibrium is computed by adding the necessary equality constraints on the multipliers of the shared output constraints.
 
         If centralized=True at solution time, a centralized MPC problem is solved instead of the game-theoretic one.
+        
+        An additional polyhedral shared hard constraint on the initial state and inputs can be specified using Acx, Acu, Acdu, and bc. The constraint is of the form Acx x(t) + Acu u(t) + Acdu (u(t)-u(t-1)) <= bc(t). The RHS bc(t) may vary over time. Infeasibility may occur if no input exists that satisfies the constraints for the current state and previous input.
 
         (C) 2025 Alberto Bemporad, December 26, 2025.
 
@@ -2191,6 +2197,14 @@ class NashLinearMPC():
             List of slack variable penalties for each agent. If None, a default value of 1.e3 is used for all agents.
         Tc : int, optional
             Constraint horizon. If None, constraints are applied over the entire prediction horizon T.
+        Acx : ndarray, optional
+            Matrix for additional shared polyhedral constraints on the initial state. If None, no such constraints are applied.
+        Acu : ndarray, optional
+            Matrix for additional shared polyhedral constraints on the initial input. If None, no such constraints are applied.
+        Acdu : ndarray, optional
+            Matrix for additional shared polyhedral constraints on the initial input increment. If None, no such constraints are applied.
+        bc : ndarray, optional
+            RHS for additional shared polyhedral constraints. If None, no such constraints are applied. It can be modified at runtime by passing the value bc(t) via the solve() method.
         """
 
         self.sizes = sizes
@@ -2300,8 +2314,25 @@ class NashLinearMPC():
         else:
             dumax = np.inf * np.ones(nu)
         self.dumax = dumax
+        
+        if (Acx is not None) and (Acu is not None) and (Acdu is not None) and (bc is not None):
+            if not Acx.shape[1] == nx:
+                raise ValueError(f"Acx must have {nx} columns, you provided {Acx.shape[1]}")
+            if not Acu.shape[1] == nu:
+                raise ValueError(f"Acu must have {nu} columns, you provided {Acu.shape[1]}")
+            if not Acdu.shape[1] == nu:
+                raise ValueError(f"Acdu must have {nu} columns, you provided {Acdu.shape[1]}")
+            if not Acx.shape[0] == Acu.shape[0] == Acdu.shape[0] == bc.shape[0]:
+                raise ValueError(f"Acx, Acu, Acdu, and bc must have the same number of rows, you provided {Acx.shape[0]}, {Acu.shape[0]}, {Acdu.shape[0]}, and {bc.shape[0]} rows")
+            self.has_poly_constraints = True
+        else:
+            self.has_poly_constraints = False       
+        self.Acx = Acx
+        self.Acu = Acu
+        self.Acdu = Acdu
+        self.bc = bc
 
-        def build_qp(A, B, C, Qy, Qdu, Qeps, sizes, N, T, ymin, ymax, umin, umax, dumin, dumax, Tc):
+        def build_qp(A, B, C, Qy, Qdu, Qeps, sizes, N, T, ymin, ymax, umin, umax, dumin, dumax, Tc, Acx, Acu, Acdu, bc):
             # Construct QP problem to solve linear MPC for a generic input sequence du
             nx, nu = B.shape
             ny = C.shape[0]
@@ -2402,6 +2433,16 @@ class NashLinearMPC():
                                               ))
                                ))
                                ))
+            if self.has_poly_constraints:
+                ii_c = np.zeros(A_con.shape[0]+Acu.shape[0], dtype=bool)
+                # Add constraint Acx x(t) + Acu (u(t-1) + du(0)) + Acdu (du(0)) <= bc 
+                # --> (Acu + Acdu) du(0) <= bc - Acx x(t) - Acu u(t-1)
+                A_con = np.vstack((A_con, np.hstack((Acu + Acdu, np.zeros((Acu.shape[0], A_con.shape[1]-nu))))))
+                B_con = np.vstack((B_con, np.hstack((-Acx, -Acu))))
+                b_con = np.hstack((b_con, bc))
+                ii_c[-Acu.shape[0]:] = True  # indices of the additional constraints
+            else:
+                ii_c = None
 
             # Final QP problem: each agent i solves
             #
@@ -2411,15 +2452,15 @@ class NashLinearMPC():
             # # s.t. A_con [du_sequence;eps1...epsN] <= b_con + B_con [x0;u(-1)]
             #        lb <= [du_sequence;eps1...epsN] <= ub
 
-            return H, c, F, A_con, b_con, B_con, lb, ub
+            return H, c, F, A_con, b_con, B_con, lb, ub, ii_c
 
-        H, c, F, A_con, b_con, B_con, lb, ub = build_qp(
-            A, B, C, Qy, Qdu, Qeps, sizes, N, T, ymin, ymax, umin, umax, dumin, dumax, self.Tc)
+        H, c, F, A_con, b_con, B_con, lb, ub, ii_c = build_qp(
+            A, B, C, Qy, Qdu, Qeps, sizes, N, T, ymin, ymax, umin, umax, dumin, dumax, self.Tc, Acx, Acu, Acdu, bc)
 
         # Rearrange optimization variables to have all agents' variables together at each time step
         # Original z ordering:
         #   [du_1(0); ...; du_N(0); du_1(1); ...; du_N(1); ...; du_1(T-1); ...; du_N(T-1); eps1; ...; epsN]
-        # Desired z_new ordering:
+        # New z_new ordering:
         #   [du_1(0); du_1(1); ...; du_1(T-1); eps1; du_2(0); ...; du_2(T-1); eps2; ...; du_N(0); ...; du_N(T-1); epsN]
         perm = []
         cum_sizes = np.cumsum([0] + list(sizes))
@@ -2445,10 +2486,13 @@ class NashLinearMPC():
         self.A_con = A_con[:, perm][iscon, :]  # same as A_con@P.T
         self.b_con = b_con[iscon]
         self.B_con = B_con[iscon, :]
+        if self.has_poly_constraints:
+            self.ii_c = ii_c[iscon]  # indices of the additional hard-constraints introduced for step 0
 
         # z >= lb -> P' z_new >= lb -> z_new >= P lb
         self.lb = lb[perm]
         self.ub = ub[perm]
+        
         # remove constraints beyond constraint horizon Tc
         off = 0
         Tc = self.Tc
@@ -2460,7 +2504,7 @@ class NashLinearMPC():
             off += T*si + 1  # Each agent optimizes du_i(0)..du_i(T-1), eps_i
         self.iperm = np.argsort(perm)  # inverse permutation
 
-    def solve(self, x0, u1, ref, M=1.e4, variational=False, centralized=False, solver='highs'):
+    def solve(self, x0, u1, ref, M=1.e4, variational=False, centralized=False, solver='highs', bc=None):
         """Solve game-theoretic linear MPC problem for a given reference via MILP.
         
         Parameters
@@ -2479,6 +2523,8 @@ class NashLinearMPC():
             If True, solve a centralized MPC problem via QP instead of the game-theoretic one via MILP.
         solver : str, optional
             MILP solver to use ('highs' or 'gurobi').
+        bc : ndarray, optional
+            RHS for additional shared polyhedral constraints possibly imposed at current time step. If None, the value provided during initialization is used, or no such constraints were specified at construction.
             
         Returns
         -------
@@ -2503,15 +2549,20 @@ class NashLinearMPC():
             print(
                 "\033[1;31mWarning: variational equilibrium ignored in centralized MPC.\033[0m")
 
-        b = self.b_con + self.B_con @ np.hstack((x0, u1))
-        c = [self.c[i] + self.F[i] @
-             np.hstack((x0, u1, ref)) for i in range(self.N)]
+        if not self.has_poly_constraints and bc is not None:
+            raise ValueError("No additional constraints were specified at construction, but bc value is provided at solve time.")
+        b = self.b_con.copy() 
+        if self.has_poly_constraints and bc is not None:
+            # Update the RHS of the additional constraints with the provided bc value at current time step
+            b[self.ii_c] = bc
+        b += self.B_con @ np.hstack((x0, u1))
+        c = [self.c[i] + self.F[i] @ np.hstack((x0, u1, ref)) for i in range(self.N)]
 
         t0 = time.time()
         if not centralized:
             # Set up and solve GNEP via MILP
             gnep = GNEP_LQ(sizes, self.H, c, F=None, lb=self.lb, ub=self.ub, pmin=None, pmax=None,
-                           A=self.A_con, b=b, S=None, D=None, E=None, h=None, M=M, variational=variational, solver=solver)
+                           A=self.A_con, b=b, S=None, D_pwa=None, E_pwa=None, h_pwa=None, M=M, variational=variational, solver=solver)
         else:
             # Centralized MPC: total cost = sum of all agents' costs, solve via QP
             H_cen = csc_matrix(sum(self.H[i] for i in range(self.N)))
@@ -2529,11 +2580,16 @@ class NashLinearMPC():
 
         if not centralized:
             gnep_sol = gnep.solve()
+            if gnep_sol is None:
+                raise ValueError("No GNE solution found for game-theoretic MPC problem.")
             z = gnep_sol.x
             elapsed_time_solver = gnep_sol.elapsed_time
         else:
             # prob.update(q=c_cen, u=b) # We could speedup by storing prob and reusing previous factorizations
             res = prob.solve()  # Solve QP problem
+            if res.info.status_val != 1:
+                raise ValueError(
+                    f"Centralized MPC QP solver failed with status {res.info.status}")
             z = res.x
             elapsed_time_solver = res.info.run_time
 
