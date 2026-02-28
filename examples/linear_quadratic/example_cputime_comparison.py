@@ -34,13 +34,11 @@ for N in range(1, max_size+1):
 
     Q = []
     c = []
-    F = []
     for i in range(N):
         Qi = np.eye(nvar)
         Q.append(Qi)
         ci = i*np.ones(nvar)
         c.append(ci)
-        F.append(np.random.randn(nvar, npar))
 
     def solve_gnep_lq_milp(solver):
         gnep_lq = GNEP_LQ(sizes, Q, c, F=None, lb=lb, ub=ub, pmin=pmin,
@@ -80,10 +78,10 @@ ax1.semilogy(range(1, max_size+1), cpu_time_milp_highs,
 ax1.semilogy(range(1, max_size+1), cpu_time_milp_gurobi,
              color=colors[1], linewidth=4, label='MILP - Gurobi')
 ax1.semilogy(range(1, max_size+1), cpu_time_lm,
-             color=colors[2], linewidth=4, label='LM')
+             color=colors[3], linewidth=4, label='LM')
 ax1.set_xlabel(r'number $N$ of agents')
 ax1.set_ylabel(r'CPU time (s)')
 ax1.legend()
 plt.grid()
 plt.show()
-plt.savefig("example_milp_vs_lm.pdf", bbox_inches='tight')
+plt.savefig("example_cputime_comparison.pdf", bbox_inches='tight')

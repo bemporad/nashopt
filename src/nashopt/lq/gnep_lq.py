@@ -8,6 +8,7 @@ import numpy as np
 import time
 from types import SimpleNamespace
 from .._common.optional_deps import get_gurobi, get_highspy
+from .prox_admm_gne import solve as solve_prox_admm
 
 class GNEP_LQ():
     def __init__(self, dim, Q, c, F=None, lb=None, ub=None, pmin=None, pmax=None, A=None, b=None, S=None, Aeq=None, beq=None, Seq=None, D_pwa=None, E_pwa=None, h_pwa=None, Q_J=None, c_J=None, M=1e4, variational=False, solver="highs"):
@@ -41,7 +42,7 @@ class GNEP_LQ():
 
         If max_solutions > 1, multiple solutions are searched for (if they exist, up to max_solutions), each corresponding to a different combination of active constraints at the equilibrium.
 
-        To search for a variational GNE, set the flag variational=True. In this case, the KKT conditions require equal Lagrange multipliers for all agents for each shared constraint.
+        To search for a variational GNE with no parameter, or parameter p=pmin=pmax, set the flag variational=True. In this case, the KKT conditions require equal Lagrange multipliers for all agents for each shared constraint.
 
             Parameters
         ----------
@@ -89,9 +90,12 @@ class GNEP_LQ():
         variational : bool
             If True, search for a variational GNE.
         solver : str
-            Solver used to solve the resulting mixed-integer program. "highs" (default) or "gurobi".
+            Solver used to solve the GNE:
+            - "highs" (default) mixed-integer programming solver
+            - "gurobi" mixed-integer programming solver
+            - "prox_admm" proximal ADMM algorithm (Borgens and Kanzow, 2021), only for variational non-parametric GNEPs
 
-        (C) 2025 Alberto Bemporad, December 20, 2025
+        (C) 2025-2026 Alberto Bemporad
         """
 
         nx = sum(dim)  # total number of variables
@@ -137,6 +141,14 @@ class GNEP_LQ():
         has_params = (pmin is not None) and (pmax is not None) and (
             pmin.size > 0) and (pmax.size > 0)
         if has_params:
+            is_single_p = np.all(pmin == pmax)
+            if is_single_p:
+                single_p = pmin  # fixed parameter value
+        else:
+            is_single_p = False
+            single_p = None
+                
+        if has_params:
             npar = F[0].shape[1]
             for i in range(N):
                 if not F[i].shape == (nx, npar):
@@ -150,12 +162,12 @@ class GNEP_LQ():
                 raise ValueError(f"pmin must have {npar} elements")
             if not pmax.size == npar:
                 raise ValueError(f"pmax must have {npar} elements")
-            if np.all(pmin == pmax):
+            if is_single_p:
                 for i in range(N):
-                    c[i] = c[i] + F[i] @ pmin  # absorb fixed p into c
+                    c[i] = c[i] + F[i] @ single_p  # absorb fixed p into c
                 if has_pwa_objective:
                     for k in range(nJ):
-                        h_pwa[k] = h_pwa[k] + E_pwa[k] @ pmin  # absorb fixed p into h
+                        h_pwa[k] = h_pwa[k] + E_pwa[k] @ single_p  # absorb fixed p into h
         else:
             npar = 0
 
@@ -187,8 +199,8 @@ class GNEP_LQ():
             if has_params:
                 if not S.shape == (ncon, npar):
                     raise ValueError(f"S must be of shape ({ncon},{npar})")
-                if np.all(pmin == pmax):
-                    b = b + S @ pmin  # absorb fixed p into b
+                if is_single_p:
+                    b = b + S @ single_p  # absorb fixed p into b
         else:
             ncon = 0
             nlam = 0  # no lam, delta, y variables
@@ -213,8 +225,8 @@ class GNEP_LQ():
             if has_params:
                 if not Seq.shape == (nconeq, npar):
                     raise ValueError(f"Seq must be of shape ({nconeq},{npar})")
-                if np.all(pmin == pmax):
-                    beq = beq + Seq @ pmin  # absorb fixed p into beq
+                if is_single_p:
+                    beq = beq + Seq @ single_p  # absorb fixed p into beq
         else:
             nconeq = 0
             nmu = 0  # no Lagrange multipliers mu
@@ -225,29 +237,47 @@ class GNEP_LQ():
                     "\033[1;31mVariational GNE requested but no shared constraints are defined.\033[0m")
                 variational = False
 
-        if has_params and np.all(pmin == pmax):
+        if has_params and is_single_p:
             has_params = False  # no parameters anymore
             npar = 0
 
         solver = solver.lower()
 
+        if solver not in ["highs", "gurobi", "prox_admm"]:
+            raise ValueError("solver must be 'highs' or 'gurobi' or 'prox_admm'")
+        
         if solver == 'gurobi':
             gp = get_gurobi()
             if gp is None:
                 print(
                     "\033[1;33mWarning: Gurobi not installed, switching to HiGHS solver.\033[0m")
                 solver = "highs"
+            is_mip = True
+        
+        if solver == "prox_admm":
+            if not variational:
+                raise ValueError("Proximal ADMM algorithm can only solve variational GNEPs")
+            if has_params:
+                raise ValueError("Proximal ADMM algorithm only solves non-parametric GNEPs")
+            if has_pwa_objective or has_quad_objective:
+                raise ValueError("Proximal ADMM algorithm only solves GNEPs without game-design objective function")
+            if len(dim)<2:
+                raise ValueError("Proximal ADMM algorithm only solves GNEPs with at least 2 agents")
+            is_mip = False
+
         if solver == "highs":
             highspy = get_highspy()
             if highspy is None:
                 raise ValueError("HiGHS solver not installed.")
             inf = highspy.kHighsInf
+            is_mip = True
         elif solver == "gurobi":
             inf = gp.GRB.INFINITY
         else:
-            raise ValueError("solver must be 'highs' or 'gurobi'")
+            inf = np.inf
         
         self.solver = solver
+        self.is_mip = is_mip
 
         # Deal with variable bounds
         if lb is None:
@@ -260,7 +290,7 @@ class GNEP_LQ():
             raise ValueError(f"ub must have {nx} elements")
         if not np.all(ub >= lb):
             raise ValueError("Inconsistent variable bounds: some ub < lb")
-        if any(ub < inf) or any(lb > -inf):
+        if is_mip and (any(ub < inf) or any(lb > -inf)):
             # Embed variable bounds into inequality constraints
             AA = []
             bb = []
@@ -296,7 +326,7 @@ class GNEP_LQ():
 
         cum_dim_x = np.cumsum([0]+dim[:-1])  # cumulative sum of dim
 
-        if has_ineq_constraints:
+        if has_ineq_constraints and is_mip:
             # Determine where each agent's vars appear in the inequality constraints
             # G[i,j] = 1 if constraint i depends on agent j's variables
             G = np.zeros((ncon, N), dtype=bool)
@@ -313,7 +343,7 @@ class GNEP_LQ():
             G = None
             dim_lam = None
 
-        if has_eq_constraints:
+        if has_eq_constraints and is_mip:
             # Determine where each agent's vars appear in the equality constraints
             # G[i,j] = 1 if constraint i depends on agent j's variables
             Geq = np.zeros((nconeq, N), dtype=bool)
@@ -330,11 +360,11 @@ class GNEP_LQ():
             nmu = 0
             dim_mu = None
             Geq = None
-            
+
         # Variable index ranges in the *single* Highs column space (j=agent index)
         # [ x (0..nx-1) | p (nx..nx+npar-1) | y | lam | delta ]
         def idx_x(j, i): return cum_dim_x[j] + i
-
+            
         if solver == 'highs':
             if has_params:
                 def idx_p(t): return nx + t
@@ -620,7 +650,7 @@ class GNEP_LQ():
                     # Define objective function: min eps
                     mip.changeColCost(idx_eps(k), 1.0)
                     
-        else:  # gurobi
+        elif solver == "gurobi":
 
             m = gp.Model("GNEP_LQ_MIP")
             mip = SimpleNamespace()
@@ -759,9 +789,21 @@ class GNEP_LQ():
                 J_Q = 0.0
                 
             m.setObjective(J_PWA + J_Q, gp.GRB.MINIMIZE)
-                
+            
+        elif solver == "prox_admm":
+            mip = SimpleNamespace() # store problem data in the object for use in the ADMM algorithm. It's called mip for consistency with the other solvers, even if no MILP model is created.  
+            mip.Q = Q
+            mip.c = c
+            mip.F = F
+            mip.b = b
+            mip.Aeq = Aeq
+            mip.beq = beq
+                            
         self.mip = mip
+        self.dim = dim
         self.has_params = has_params
+        self.is_single_p = is_single_p
+        self.single_p = single_p
         self.has_ineq_constraints = has_ineq_constraints
         self.has_eq_constraints = has_eq_constraints
         self.has_pwa_objective = has_pwa_objective
@@ -786,7 +828,7 @@ class GNEP_LQ():
         else:
             self.nJ = 0
 
-    def solve(self, max_solutions=1, verbose=0):
+    def solve(self, max_solutions=1, verbose=0, solver_options=None):
         """Solve a linear quadratic generalized GNE problem and associated game-design problem via mixed-integer linear programming (MILP) or mixed-integer quadratic programming (MIQP):
 
             min_{x,p,y,lam,delta,eps} sum(eps[k])  (if D,E,h provided)
@@ -805,11 +847,13 @@ class GNEP_LQ():
                 pmin <= p <= pmax            
 
         If D_pwa, E_pwa, h_pwa, Q_J, and c_J are None, the objective function is omitted, and only an equilibrium point is searched for. If pmin = pmax (or pmin,pmax are None), the problem reduces to finding a solution to a standard (non-parametric) GNEP-QP (or, in case infinitely many exist, the one
-        minimizing f(x,p). The MILP solver specified during object construction is used to solve the problem.
+        minimizing f(x,p)). The MILP solver specified during object construction is used to solve the problem.
 
         When multiple solutions are searched for (max_solutions > 1), the MIP is solved multiple times, adding a "no-good" cut after each solution found to exclude it from the feasible set.
         
         MILP is used when no quadratic objective function is specified, otherwise MIQP is used (only Gurobi supported). 
+        
+        Alternatively, if the solver specified is "prox_admm", a proximal ADMM algorithm is used to solve the variational GNEP without parameters (or with a fixed parameter) and without PWA or quadratic objective function. 
 
         Parameters
         ----------
@@ -817,6 +861,8 @@ class GNEP_LQ():
             Maximum number of solutions to look for (1 by default).
         verbose : int
             Verbosity level: 0 = None, 1 = minimal, 2 = detailed.
+        solver_options : dict
+            Dictionary of solver-specific options to set before solving (not required by MIP solvers).
 
         Returns
         -------
@@ -833,10 +879,10 @@ class GNEP_LQ():
                 eps = optimal value of the objective function (if xdes is provided)
                 G = boolean matrix indicating which constraints involve which agents (if any inequalities)
                 Geq = boolean matrix indicating which equalities involve which agents (if any equalities)
-                status_str = HiGHS MIP model status as string
+                status_str = HiGHS MIP model status (or other solver status) as string
                 elapsed_time = time taken to solve the MILP (in seconds)
 
-        (C) 2025 Alberto Bemporad, December 18, 2025    
+        (C) 2025-2026 Alberto Bemporad
         """
 
         nx = self.nx
@@ -845,11 +891,12 @@ class GNEP_LQ():
         nconeq = self.nconeq
         nbox = self.nbox
         N = self.N
-        G = self.G
         A = self.A
-        Geq = self.Geq
-        dim_lam = self.dim_lam
-        dim_mu = self.dim_mu
+        if self.is_mip:
+            G = self.G
+            Geq = self.Geq
+            dim_lam = self.dim_lam
+            dim_mu = self.dim_mu
 
         pmin = self.pmin
 
@@ -857,140 +904,186 @@ class GNEP_LQ():
             print(
                 "\033[1;31mCannot search for multiple solutions if no inequality constraints are present.\033[0m")
             max_solutions = 1
+        if max_solutions > 1 and self.solver == 'prox_admm':
+            print(
+                "\033[1;31mProximal ADMM solver does not support multiple solution search.\033[0m")
+            max_solutions = 1
 
-        if verbose >= 1:
-            print("Solving MIP problem ...")
+        if self.is_mip:
+            if verbose >= 1:
+                print("Solving MIP problem ...")
 
-        if self.solver == 'highs':
-            highspy = get_highspy()
-            idx_lam = self.idx_lam
-            idx_mu = self.idx_mu
-            idx_delta = self.idx_delta
-            idx_eps = self.idx_eps
-            inf = highspy.kHighsInf
-            if verbose < 2:
-                self.mip.setOptionValue("log_to_console", False)
-        else:
-            gp = get_gurobi()
-            self.mip.model.setParam('OutputFlag', verbose >=2)
-
-        x = None
-        p = None
-        lam = None
-        delta = None
-        mu = None
-        eps = None
-
-        go = True
-        solutions = []  # store found solutions
-        found = 0
-        while go and (found < max_solutions):
-
-            t0 = time.time()
-            
             if self.solver == 'highs':
-                status = self.mip.run()
-                model_status = self.mip.getModelStatus()
-                status_str = self.mip.modelStatusToString(model_status)
-
-                if (status != highspy.HighsStatus.kOk) or (model_status != highspy.HighsModelStatus.kOptimal):
-                    go = False
+                highspy = get_highspy()
+                idx_lam = self.idx_lam
+                idx_mu = self.idx_mu
+                idx_delta = self.idx_delta
+                idx_eps = self.idx_eps
+                inf = highspy.kHighsInf
+                if verbose < 2:
+                    self.mip.setOptionValue("log_to_console", False)
             else:
-                self.mip.model.optimize()
-                go = (self.mip.model.status == gp.GRB.OPTIMAL)
-                status_str = 'optimal solution found' if go else 'not solved'
+                gp = get_gurobi()
+                self.mip.model.setParam('OutputFlag', verbose >=2)
+
+            x = None
+            p = None
+            lam = None
+            delta = None
+            mu = None
+            eps = None
+
+            go = True
+            solutions = []  # store found solutions
+            found = 0
+            while go and (found < max_solutions):
+
+                t0 = time.time()
                 
-            t0 = time.time() - t0
-
-            if go:
-                found += 1
                 if self.solver == 'highs':
-                    sol = self.mip.getSolution()
-                    x_full = np.array(sol.col_value, dtype=float)
+                    status = self.mip.run()
+                    model_status = self.mip.getModelStatus()
+                    status_str = self.mip.modelStatusToString(model_status)
+
+                    if (status != highspy.HighsStatus.kOk) or (model_status != highspy.HighsModelStatus.kOptimal):
+                        go = False
                 else:
-                    x_full = np.array(list(self.mip.model.getAttr('X', self.mip.x).values()))
-
-                if verbose == 1 and max_solutions > 1:
-                    print(".", end="")
-                    if found % 50 == 0 and found > 0:
-                        print("")
-
-                # Extract slices
-                x = x_full[0:nx].reshape(-1)
-                if self.has_params:
-                    if self.solver == 'highs':
-                        p = x_full[nx:nx+npar].reshape(-1)
-                    else:
-                        p = np.array(list(self.mip.model.getAttr('X', self.mip.p).values()))
-                else:
-                    p = pmin  # fixed p (or None)
-
-                if self.has_ineq_constraints:
-                    if self.solver == 'highs':
-                        delta = x_full[idx_delta(0):idx_delta(ncon)].reshape(-1)
-                    else:
-                        delta = np.array(list(self.mip.model.getAttr('X', self.mip.delta).values()))
-                    # Round delta to {0,1} just in case
-                    delta = 0 + (delta > 0.5)
+                    self.mip.model.optimize()
+                    go = (self.mip.model.status == gp.GRB.OPTIMAL)
+                    status_str = 'optimal solution found' if go else 'not solved'
                     
-                    lam = []
-                    for j in range(N):
-                        lam_j = np.zeros(ncon)
-                        if self.solver == 'highs':
-                            lam_j[G[:, j]] = x_full[idx_lam(
-                                j, 0):idx_lam(j, dim_lam[j])]
-                        else:
-                            lam_j[G[:, j]] = np.array(list(self.mip.model.getAttr('X', self.mip.lam[j]).values()))
-                        lam_g = lam_j[:ncon - nbox]  # exclude box constraints
-                        # add only multipliers for box constraints involving agent j
-                        # Start with finite lower bounds
-                        for k in range(ncon - nbox, ncon):
-                            if G[k, j] and sum(A[k, :]) < -0.5:
-                                lam_g = np.hstack((lam_g, lam_j[k]))
-                        for k in range(ncon - nbox, ncon):
-                            if G[k, j] and sum(A[k, :]) > 0.5:
-                                lam_g = np.hstack((lam_g, lam_j[k]))
-                        lam.append(lam_g.reshape(-1))
+                t0 = time.time() - t0
 
-                if self.has_eq_constraints:
-                    mu = []
-                    for j in range(N):
-                        mu_j = np.zeros(nconeq)
-                        if self.solver == 'highs':
-                            mu_j[Geq[:, j]] = x_full[idx_mu(
-                                j, 0):idx_mu(j, dim_mu[j])]
-                        else:
-                            mu_j[Geq[:, j]] = np.array(list(self.mip.model.getAttr('X', self.mip.mu[j]).values()))
-                        mu.append(mu_j.reshape(-1))
-
-                if self.has_pwa_objective:
+                if go:
+                    found += 1
                     if self.solver == 'highs':
-                        eps = np.array(x_full[idx_eps(0):idx_eps(self.nJ)]).reshape(-1)
+                        sol = self.mip.getSolution()
+                        x_full = np.array(sol.col_value, dtype=float)
                     else:
-                        eps = np.array(list(self.mip.model.getAttr('X', self.mip.eps).values()))
+                        x_full = np.array(list(self.mip.model.getAttr('X', self.mip.x).values()))
 
-                solutions.append(SimpleNamespace(x=x, p=p, lam=lam, delta=delta, mu=mu,
-                                 eps=eps, status_str=status_str, G=G, Geq=Geq, elapsed_time=t0))
+                    if verbose == 1 and max_solutions > 1:
+                        print(".", end="")
+                        if found % 50 == 0 and found > 0:
+                            print("")
 
-                if found < max_solutions:
-                    # Append no-good constraint to exclude this delta in future iterations
-                    # sum_{i: delta_k(i)=1} delta(i) - sum_{i: delta_k(i)=0} delta(i) <= -1 + sum(delta_k(i))
-                    if self.solver == 'highs':
-                        indices = np.array([idx_delta(k)
-                                        for k in range(ncon)], dtype=np.int64)
-                        values = np.ones(ncon, dtype=np.double)
-                        values[delta < 0.5] = -1.0
-                        lower = -inf
-                        upper = np.sum(delta) - 1.
-                        self.mip.addRow(lower, upper, len(
-                            indices), indices, values)
+                    # Extract slices
+                    x = x_full[0:nx].reshape(-1)
+                    if self.has_params:
+                        if self.solver == 'highs':
+                            p = x_full[nx:nx+npar].reshape(-1)
+                        else:
+                            p = np.array(list(self.mip.model.getAttr('X', self.mip.p).values()))
                     else:
-                        self.mip.model.addConstr(
-                            gp.quicksum(self.mip.delta[k] if delta[k] > 0.5 else -self.mip.delta[k] for k in range(ncon)) <= - 1. + np.sum(delta),
-                            name=f"no_good_cut_{found}")
+                        p = pmin  # fixed p (or None)
 
-        if verbose == 1:
-            print(f" done. {found} combinations found")
+                    if self.has_ineq_constraints:
+                        if self.solver == 'highs':
+                            delta = x_full[idx_delta(0):idx_delta(ncon)].reshape(-1)
+                        else:
+                            delta = np.array(list(self.mip.model.getAttr('X', self.mip.delta).values()))
+                        # Round delta to {0,1} just in case
+                        delta = 0 + (delta > 0.5)
+                        
+                        lam = []
+                        for j in range(N):
+                            lam_j = np.zeros(ncon)
+                            if self.solver == 'highs':
+                                lam_j[G[:, j]] = x_full[idx_lam(
+                                    j, 0):idx_lam(j, dim_lam[j])]
+                            else:
+                                lam_j[G[:, j]] = np.array(list(self.mip.model.getAttr('X', self.mip.lam[j]).values()))
+                            lam_g = lam_j[:ncon - nbox]  # exclude box constraints
+                            # add only multipliers for box constraints involving agent j
+                            # Start with finite lower bounds
+                            for k in range(ncon - nbox, ncon):
+                                if G[k, j] and sum(A[k, :]) < -0.5:
+                                    lam_g = np.hstack((lam_g, lam_j[k]))
+                            for k in range(ncon - nbox, ncon):
+                                if G[k, j] and sum(A[k, :]) > 0.5:
+                                    lam_g = np.hstack((lam_g, lam_j[k]))
+                            lam.append(lam_g.reshape(-1))
+
+                    if self.has_eq_constraints:
+                        mu = []
+                        for j in range(N):
+                            mu_j = np.zeros(nconeq)
+                            if self.solver == 'highs':
+                                mu_j[Geq[:, j]] = x_full[idx_mu(
+                                    j, 0):idx_mu(j, dim_mu[j])]
+                            else:
+                                mu_j[Geq[:, j]] = np.array(list(self.mip.model.getAttr('X', self.mip.mu[j]).values()))
+                            mu.append(mu_j.reshape(-1))
+
+                    if self.has_pwa_objective:
+                        if self.solver == 'highs':
+                            eps = np.array(x_full[idx_eps(0):idx_eps(self.nJ)]).reshape(-1)
+                        else:
+                            eps = np.array(list(self.mip.model.getAttr('X', self.mip.eps).values()))
+
+                    solutions.append(SimpleNamespace(x=x, p=p, lam=lam, delta=delta, mu=mu,
+                                    eps=eps, status_str=status_str, G=G, Geq=Geq, elapsed_time=t0))
+
+                    if found < max_solutions:
+                        # Append no-good constraint to exclude this delta in future iterations
+                        # sum_{i: delta_k(i)=1} delta(i) - sum_{i: delta_k(i)=0} delta(i) <= -1 + sum(delta_k(i))
+                        if self.solver == 'highs':
+                            indices = np.array([idx_delta(k)
+                                            for k in range(ncon)], dtype=np.int64)
+                            values = np.ones(ncon, dtype=np.double)
+                            values[delta < 0.5] = -1.0
+                            lower = -inf
+                            upper = np.sum(delta) - 1.
+                            self.mip.addRow(lower, upper, len(
+                                indices), indices, values)
+                        else:
+                            self.mip.model.addConstr(
+                                gp.quicksum(self.mip.delta[k] if delta[k] > 0.5 else -self.mip.delta[k] for k in range(ncon)) <= - 1. + np.sum(delta),
+                                name=f"no_good_cut_{found}")
+
+            if verbose == 1:
+                print(f" done. {found} combinations found")
+        
+        else:
+            if verbose >= 1:
+                print(f"Solving via '{self.solver}' method ...")
+            
+            if solver_options is None:
+                solver_options = {}
+            
+            if self.solver == 'prox_admm':
+                # Check if solver_options has the required options for the ADMM algorithm, and set defaults if not provided.
+                if "x0" not in solver_options:
+                    x0 = None
+                else:
+                    x0 = solver_options["x0"]
+                if "maxiter" not in solver_options:
+                    maxiter = 1000
+                else:
+                    maxiter = solver_options["maxiter"]
+                if "tol" not in solver_options:
+                    tol = 1e-6
+                else:
+                    tol = solver_options["tol"]
+                if "rho" not in solver_options:
+                    rho = 1.0
+                else:
+                    rho = solver_options["rho"]
+                if "gamma" not in solver_options:
+                    gamma = 1.0
+                else:
+                    gamma = solver_options["gamma"]
+                if "cvx_solver" not in solver_options:
+                    cvx_solver = "OSQP"
+                else:                    
+                    cvx_solver = solver_options["cvx_solver"]
+            
+            sol = solve_prox_admm(self.dim, self.mip.Q, self.mip.c, self.A, self.mip.b, C=self.mip.Aeq, d=self.mip.beq, lb=self.lb, ub=self.ub, x0=x0, rho=rho, gamma=gamma, maxiter=maxiter, tol=tol, verbose=verbose, cvx_solver=cvx_solver)
+            sol.p = self.single_p            
+            sol.eps = None
+            sol.delta = None
+
+            solutions = [sol]
 
         if len(solutions) == 1:
             return solutions[0]

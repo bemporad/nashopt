@@ -42,7 +42,16 @@ npar = 1   # number of parameters
 pmin = np.zeros(npar)  # fix p=0
 pmax = np.zeros(npar)   # fix p=0
 
-for test in range(2):
+def print_residuals(x,p,lam):
+    print("Check residuals:")
+    print(np.linalg.norm((Q[0] @ x + c[0] + F[0] @ p + A.T@lam[0][:ncon])[0:sizes[0]] +
+        np.array([-lam[0][ncon]+lam[0][ncon+2], -lam[0][ncon+1]+lam[0][ncon+3]])))
+    print(np.linalg.norm((Q[1] @ x + c[1] + F[1] @ p + A.T@lam[1][:ncon])[
+        sizes[0]:sizes[0]+sizes[1]] + np.array([-lam[1][ncon]+lam[1][ncon+1]])))
+    if N > 2:
+        print(np.linalg.norm((Q[2] @ x + c[2] + F[2] @ p + A.T@lam[2][:ncon])[sizes[0]+sizes[1]:]
+                            + np.array([-lam[2][ncon]+lam[2][ncon+1]])))
+for test in range(0,2):
     if test == 0:
         ncon = 1
         A = np.array([[1.0, 0.0, 1.0, 1.0]])
@@ -54,30 +63,24 @@ for test in range(2):
         b = np.random.rand(ncon)
         S = np.random.randn(ncon, npar)
 
-    gnep = GNEP_LQ(sizes, Q, c, F, lb=lb, ub=ub, pmin=pmin,
-                   pmax=pmax, A=A, b=b, S=S, M=1e4, variational=variational, solver='highs')
-    sol = gnep.solve()
-    print("HiGHS status:", sol.status_str)
-    x = sol.x
-    p = sol.p
-    lam = sol.lam
-    delta = sol.delta
+    for solver in ["highs","prox_admm"]:
+        gnep = GNEP_LQ(sizes, Q, c, F, lb=lb, ub=ub, pmin=pmin,
+                        pmax=pmax, A=A, b=b, S=S, M=1e4, variational=variational, solver=solver)
+        sol = gnep.solve()
+        print(f"{solver} status: {sol.status_str}, CPU time: {sol.elapsed_time:.4f} s")
+        x = sol.x
+        p = sol.p
+        lam = sol.lam
+        delta = sol.delta
 
-    print("x:", x)
-    print("p:", p)
-    for i in range(N):
-        print(f"lambda_{i}:", lam[i])
-    print("delta:", delta)
+        print("x:", x)
+        print("p:", p)
+        for i in range(N):
+            print(f"lambda_{i}:", lam[i])
+        print("delta:", delta)
 
-    if sol.status_str == "Optimal":
-        print("Check residuals:")
-        print(np.linalg.norm((Q[0] @ x + c[0] + F[0] @ p + A.T@lam[0][:ncon])[0:sizes[0]] +
-              np.array([-lam[0][ncon]+lam[0][ncon+2], -lam[0][ncon+1]+lam[0][ncon+3]])))
-        print(np.linalg.norm((Q[1] @ x + c[1] + F[1] @ p + A.T@lam[1][:ncon])[
-              sizes[0]:sizes[0]+sizes[1]] + np.array([-lam[1][ncon]+lam[1][ncon+1]])))
-        if N > 2:
-            print(np.linalg.norm((Q[2] @ x + c[2] + F[2] @ p + A.T@lam[2][:ncon])[sizes[0]+sizes[1]:]
-                                 + np.array([-lam[2][ncon]+lam[2][ncon+1]])))
+        if sol.status_str in ["Optimal", "Converged"]:
+            print_residuals(x,p,lam)
 
     f = []
     for i in range(N):
@@ -91,18 +94,19 @@ for test in range(2):
     Aeq = None
     beq = None
 
-    gnep = GNEP(sizes, f=f, g=g, ng=A.shape[0], lb=lb,
+    gnep_kkt = GNEP(sizes, f=f, g=g, ng=A.shape[0], lb=lb,
                 ub=ub, Aeq=Aeq, beq=beq, variational=variational)
 
     x0 = jnp.zeros(nvar)
-    sol = gnep.solve(x0)
-    x_star, lam_star, residual, stats = sol.x, sol.lam, sol.res, sol.stats
+    sol_kkt = gnep_kkt.solve(x0)
+    x_star, lam_star, residual, stats = sol_kkt.x, sol_kkt.lam, sol_kkt.res, sol_kkt.stats
 
     print("=== GNE solution ===")
-    print(f"x = {x}")
-    for i in range(gnep.N):
+    print(f"x = {x_star}")
+    for i in range(gnep_kkt.N):
         print(f"lambda[{i}] = {lam_star[i]}")
+    print_residuals(x_star,p,lam_star)
 
     print(f"KKT residual norm = {float(jnp.linalg.norm(residual)): 10.7g}")
     print(f"KKT evaluations   = {int(stats.kkt_evals): 3d}")
-    print(f"Elapsed time:       {stats.elapsed_time: .2f} seconds")
+    print(f"Elapsed time:       {stats.elapsed_time: .4f} seconds")
