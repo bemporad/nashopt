@@ -1,6 +1,8 @@
+"""
+(C) 2025 A. Bemporad
+"""
 import numpy as np
 from nashopt import NashLinearMPC
-from functools import partial
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 

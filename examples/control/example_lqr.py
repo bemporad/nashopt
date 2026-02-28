@@ -1,6 +1,7 @@
 """
 (C) 2025 A. Bemporad
 """
+
 import numpy as np
 import jax.numpy as jnp
 import time
