@@ -5,11 +5,11 @@
 # (C) 2025-2026 Alberto Bemporad
 
 import numpy as np
-import cvxpy as cp
+from scipy.linalg import solve_triangular
 import time
 from types import SimpleNamespace
 
-def solve(sizes, Q, c, A, b, C=None, d=None, lb=None, ub=None, x0=None, rho=1.0, gamma=1.0, maxiter=1000, tol=1e-6, verbose=True, cvx_solver=cp.OSQP):
+def solve(sizes, Q, c, A, b, C=None, d=None, lb=None, ub=None, x0=None, rho=1.0, gamma=1.0, maxiter=1000, tol=1e-6, verbose=True):
     """
     Solve LQ-GNEP problem using the proximal ADMM Algorithm 4.1 in [1].
     
@@ -25,11 +25,11 @@ def solve(sizes, Q, c, A, b, C=None, d=None, lb=None, ub=None, x0=None, rho=1.0,
     s.t. [A;I;-I] x + s = [b;ub;-lb], C x = d, i=1,...,N
          x_{-i} = x_{-i}^*, s = s^*
 
-    s^* = argmin_{s} ||[A;I;-I] x + s - [b;ub;-lb]||^2
+    s^* = argmin_{s} 0.5*||[A;I;-I] x + s - [b;ub;-lb]||^2
     s.t. [A;I;-I] x + s - [b;ub;-lb], s>=0
          x = x*
 
-    Each subproblem is solved via CVXPY with the specified solver "cvx_solver" (default is OSQP, but MOSEK, XPRESS, CLARABEL, or other solvers supported by CVXPY can be used as well). 
+    Each prox-ADMM subproblem is solved in closed-form. 
     
     [1] E. Borgens and C. Kanzow, "ADMM-type Methods for Generalized Nash Equilibrium Problems in Hilbert Spaces," Siam Journal of Optimization, vol. 31, n.1, pp. 377-403, 2021.
         
@@ -89,17 +89,6 @@ def solve(sizes, Q, c, A, b, C=None, d=None, lb=None, ub=None, x0=None, rho=1.0,
             b = np.hstack(bb)
             m = len(AA)
     
-    if cvx_solver == "OSQP":
-        solver = cp.OSQP
-    elif cvx_solver == "MOSEK":
-        solver = cp.MOSEK
-    elif cvx_solver == "XPRESS":
-        solver = cp.XPRESS
-    elif cvx_solver == "CLARABEL":
-        solver = cp.CLARABEL
-    else:
-        raise ValueError(f"Unsupported cvx_solver '{cvx_solver}'. Supported solvers are: 'OSQP', 'MOSEK', 'XPRESS', 'CLARABEL'.")
-
     # Initialization
     xk = x0.copy()  # (n,)
     muk = np.zeros(m)       # (m,)
@@ -107,33 +96,12 @@ def solve(sizes, Q, c, A, b, C=None, d=None, lb=None, ub=None, x0=None, rho=1.0,
     if p>0:
         nuk = np.zeros(p)  
 
-    # Setup CVXPY problems for proximal player updates
-    x_var = [cp.Variable(sizes[i]) for i in range(N)] # player i's decision variables
-    s_var = cp.Variable(m) # slack variable vector for inequality constraints
-    p_x = cp.Parameter(nvar)
-    p_s = cp.Parameter(m)
-    p_mu = cp.Parameter(m) 
-    if p>0:
-        p_nu = cp.Parameter(p) # local copy of nu (for player i)
-    
-    cvx_constraints = [[]]*(N+1) # do not include bound constraints on x_var[i] as they are already embedded in the reformulated problem via A, b
-    cvx_constraints[N] += [s_var >= 0] # slack variable constraints for player N (slack variable player)
-   
-    cvx_obj_br = [0.5*cp.quad_form(x_var[i], Q[i][ii[i],:][:,ii[i]]) + (c[i][ii[i]] + Q[i][ii[i]][:,not_i[i]] @ p_x[not_i[i]]).T @ x_var[i]  for i in range(N)]
-    cvx_obj_br += [0.5*cp.sum_squares(A@p_x + s_var - b)] # objective for slack variable player
-    for i in range(N):
-        cvx_obj_br[i] += p_mu@(A[:, ii[i]] @ x_var[i]) + \
-                        0.5*gamma * cp.sum_squares(x_var[i] - p_x[ii[i]]) + \
-                        0.5*rho*cp.sum_squares(A[:, ii[i]] @ x_var[i] +\
-                                                A[:, not_i[i]] @ p_x[not_i[i]] + p_s - b)
-        if p>0:
-            cvx_obj_br[i] += p_nu@(C[:, ii[i]] @ x_var[i]) +\
-                0.5*rho * cp.sum_squares(C[:, ii[i]] @ x_var[i] + C[:, not_i[i]] @ p_x[not_i[i]] - d)
-    cvx_obj_br[N] += 0.5*cp.sum_squares(A@p_x + s_var - b) + p_mu@s_var + 0.5*gamma*cp.sum_squares(s_var - p_s) + 0.5*rho*cp.sum_squares(A@p_x + s_var - b)
-                            
-    br_prob = [cp.Problem(cp.Minimize(cvx_obj_br[i]), cvx_constraints[i]) for i in range(N+1)]
-    
-    p_s.value = sk.copy() # initial value of slack variable for player i
+    # Note: we do not include bound constraints on xi as they are already embedded in the reformulated problem via A, b. Therefore, each agent's problem can be solved explicitly as an unconstrained QP.
+    L = [np.linalg.cholesky(Q[i][ii[i],:][:,ii[i]] 
+                            + gamma*np.eye(sizes[i]) 
+                            + rho*(A[:,ii[i]].T @ A[:,ii[i]] 
+                                   + (C[:,ii[i]].T @ C[:,ii[i]] if p>0 else 0))
+                            ) for i in range(N)] # Cholesky factorization L@L.T for quadratic terms in players' cost functions
         
     go = True
     iter = 0
@@ -142,22 +110,30 @@ def solve(sizes, Q, c, A, b, C=None, d=None, lb=None, ub=None, x0=None, rho=1.0,
 
         # Primal updates
         res_x = 0.
-        p_s.value = sk.copy() # current value of slack variable for player i           
-        p_mu.value = muk.copy() # current value of mu for player i
-        if p>0:
-            p_nu.value = nuk.copy() # current value of nu for player i
+        
         for i in range(N):
-            p_x.value = xk.copy() # copy most updated version of xk for player i's problem
-            x_var[i].value = xk[ii[i]].copy() # warm start with current value of player i's decision variables
-            br_prob[i].solve(solver=solver, warm_start=True, polish=True, verbose=False)                
-            dxi = x_var[i].value - xk[ii[i]] # change in player i's decision variables
-            xk[ii[i]] = x_var[i].value # update player i's decision variables during the agent's loop, according with (4.1a) in [1]
+            # Solve (L@L.T)x = -ell via forward/backward substitution using the lower Cholesky factorization L of Q_i + gamma*I
+            const_A = A[:, not_i[i]] @ xk[not_i[i]] + sk - b
+            ell = (
+                c[i][ii[i]]
+                + Q[i][ii[i],:][:,not_i[i]] @ xk[not_i[i]]
+                - gamma * xk[ii[i]]
+                + A[:, ii[i]].T @ muk
+                + rho * A[:, ii[i]].T @ const_A
+            )
+            if p > 0:
+                const_C = C[:, not_i[i]] @ xk[not_i[i]] - d
+                ell += C[:, ii[i]].T @ nuk + rho * C[:, ii[i]].T @ const_C            
+            y = solve_triangular(L[i], -ell, lower=True) 
+            xi = solve_triangular(L[i].T, y, lower=False)
+
+            dxi = xi - xk[ii[i]] # change in player i's decision variables
+            xk[ii[i]] = xi # update player i's decision variables during the agent's loop, according with (4.1a) in [1]
             res_x = max(res_x, np.linalg.norm(dxi))
-        p_x.value = xk.copy()
-        s_var.value = sk.copy() # warm start with current value of slack variable
-        br_prob[N].solve(solver=solver, warm_start=True, polish=True, verbose=False)
-        dsk = s_var.value - sk # change in slack variable
-        sk = s_var.value # update slack variable during the agent's loop, according with (4.1a) in [1]
+
+        si = np.maximum(((1.+rho)*(b-A@xk)+gamma*sk-muk)/(1.+rho+gamma), 0) # closed-form solution for slack var
+        dsk = si - sk # change in slack variable
+        sk = si # update slack variable during the agent's loop, according with (4.1a) in [1]
         res_x = max(res_x, np.linalg.norm(dsk))
         
         # Dual updates

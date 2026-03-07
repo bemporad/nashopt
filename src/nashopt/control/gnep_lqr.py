@@ -106,9 +106,9 @@ class NashLQR():
 
             in jax using the following simple fixed-point iterations
 
-                K = (R + B^T X_k B)^(-1) B^T X_k A
-                A_cl = A - B K
-                X_{k+1} = Q + A_cl^T X_k A_cl + K^T R K
+                K_{k} = (R + B^T X_k B)^(-1) B^T X_k A
+                A_cl = A - B K_{k}
+                X_{k+1} = Q + A_cl^T X_k A_cl + K_{k}^T R K_{k}
 
             """
 

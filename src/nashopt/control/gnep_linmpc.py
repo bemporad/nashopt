@@ -28,7 +28,7 @@ class NashLinearMPC():
 
         Each agent i minimizes its finite-horizon cost
 
-            J_i(du,w) = sum_{k=0}^{T-1} (y(k+1)-w)^T Q[i] (y(k+1) - w) + du_i(k)^T Qdu[i] du_i(k) 
+            J_i(du,w) = sum_{k=0}^{T-1} (y(k+1)-w)^T Qy[i] (y(k+1) - w) + du_i(k)^T Qdu[i] du_i(k) 
 
         subject to the above dynamics and the following (local) input constraints
 
@@ -408,7 +408,7 @@ class NashLinearMPC():
         centralized : bool, optional
             If True, solve a centralized MPC problem via QP instead of the game-theoretic one via MILP.
         solver : str, optional
-            MILP solver to use ('highs' or 'gurobi').
+            LQ-GNEP solver to use: 'highs', 'gurobi' (MILP) or 'prox_admm' (only when 'variational=True').
         bc : ndarray, optional
             RHS for additional shared polyhedral constraints possibly imposed at current time step. If None, the value provided during initialization is used, or no such constraints were specified at construction.
             

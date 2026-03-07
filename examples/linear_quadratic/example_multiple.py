@@ -108,3 +108,11 @@ sol = gnep.solve()
 x_star_vgne, lam_star_vgne, residual_vgne, stats_vgne = sol.x, sol.lam, sol.res, sol.stats
 print(f"\033[1;32mCPU time (LM): {stats_vgne.elapsed_time:.4f} s\033[0m")
 print(f"\033[1;34mLM iters:\033[0m {stats_vgne.kkt_evals}")
+
+# Proximal ADMM method for variational GNEP
+gnep_lq_admm = GNEP_LQ(sizes, Q, c, F, lb, ub, pmin, pmax, A,
+                    b, S, Aeq, beq, Seq, M=1e4, variational=variational, solver='prox_admm')
+sol_admm = gnep_lq_admm.solve(max_solutions=1, verbose=0)
+print(f"\033[1;32mCPU time (Proximal ADMM): {sol_admm.elapsed_time:.4f} s\033[0m")
+print(f"\033[1;34mADMM iters:\033[0m {sol_admm.num_iters}")
+print("\033[1;34mx\033[0m:", sol_admm.x)

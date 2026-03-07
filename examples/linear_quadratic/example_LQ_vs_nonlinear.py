@@ -86,6 +86,7 @@ for test in range(0,2):
     for i in range(N):
         f.append(jax.jit(lambda x, i=i: 0.5*x.T@Q[i]@x + c[i].T@x))
 
+    @jax.jit
     def g(x):
         return A@x-b
 

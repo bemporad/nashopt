@@ -110,6 +110,7 @@ class GNEP_LQ():
         for i in range(N):
             if not Q[i].shape == (nx, nx):
                 raise ValueError(f"Q[{i}] must be of shape ({nx},{nx})")
+            Q[i] = 0.5 * (Q[i] + Q[i].T)  # symmetrize Q_i
             if not c[i].shape == (nx,):
                 raise ValueError(f"c[{i}] must be of shape ({nx},)")
 
@@ -181,6 +182,7 @@ class GNEP_LQ():
                     c_J = np.zeros((nx + npar))
             if not Q_J.shape == (nx + npar, nx + npar):
                 raise ValueError(f"Q_J must be of shape ({nx+npar},{nx+npar})")
+            Q_J = 0.5 * (Q_J + Q_J.T)  # symmetrize Q_J
             if not c_J.shape == (nx + npar,):
                 raise ValueError(f"c_J must be of shape ({nx+npar},)")
 
@@ -338,6 +340,16 @@ class GNEP_LQ():
             # cumulative sum of dim_lam
             cum_dim_lam = np.cumsum([0]+list(dim_lam[:-1]))
             nlam = np.sum(dim_lam)  # total number of lam and delta variables
+            if variational:
+                # Need to find mapping between constraint index and lam index, as constraints where an agent is not involved will have no lam variable associated, so that agent will not be considered in equalling dual vars across agents for variational GNEs. 
+                lam_map = np.zeros((ncon, N), dtype=int)
+                counter = np.zeros(N, dtype=int)
+                for j in range(ncon):
+                    for i in range(N):
+                        if G[j, i]:  # agent i involved in constraint j
+                            lam_map[j, i] = counter[i]
+                            counter[i] += 1
+
         else:
             nlam = 0
             G = None
@@ -356,6 +368,16 @@ class GNEP_LQ():
             cum_dim_mu = np.cumsum([0]+list(dim_mu[:-1]))
             # total number of y and lam and delta variables
             nmu = np.sum(dim_mu)
+
+            if variational:
+                # Need to find mapping between constraint index and mu index
+                mu_map = np.zeros((nconeq, N), dtype=int)
+                counter = np.zeros(N, dtype=int)
+                for j in range(nconeq):
+                    for i in range(N):
+                        if Geq[j, i]:  # agent i involved in constraint j
+                            mu_map[j, i] = counter[i]
+                            counter[i] += 1
         else:
             nmu = 0
             dim_mu = None
@@ -594,8 +616,8 @@ class GNEP_LQ():
                         i1 = int(ii[0].item())  # first agent involved
                         for k in range(1, len(ii)):  # loop not executed if only one agent involved
                             i2 = int(ii[k].item())  # other agent involved
-                            indices = [idx_lam(i1, j),
-                                    idx_lam(i2, j)]
+                            indices = [idx_lam(i1, lam_map[j, i1]),
+                                    idx_lam(i2, lam_map[j, i2])]
                             num_nz = 2
                             values = [1.0, -1.0]
                             mip.addRow(0.0, 0.0, num_nz, np.array(indices, dtype=np.int64),
@@ -608,8 +630,8 @@ class GNEP_LQ():
                         i1 = int(ii[0].item())  # first agent involved
                         for k in range(1, len(ii)):  # loop not executed if only one agent involved
                             i2 = int(ii[k].item())  # other agent involved
-                            indices = [idx_mu(i1, j),
-                                    idx_mu(i2, j)]
+                            indices = [idx_mu(i1, mu_map[j, i1]),
+                                    idx_mu(i2, mu_map[j, i2])]
                             num_nz = 2
                             values = [1.0, -1.0]
                             mip.addRow(0.0, 0.0, num_nz, np.array(indices, dtype=np.int64),
@@ -760,7 +782,7 @@ class GNEP_LQ():
                         i1 = int(ii[0].item())  # first agent involved
                         for k in range(1, len(ii)):  # loop not executed if only one agent involved
                             i2 = int(ii[k].item())  # other agent involved
-                            m.addConstr(lam[i1][j] == lam[i2][j], name=f"variational_ineq_constr_{j}")
+                            m.addConstr(lam[i1][lam_map[j, i1]] == lam[i2][lam_map[j, i2]], name=f"variational_ineq_constr_{j}")
                 if has_eq_constraints:
                     for j in range(nconeq):
                         # indices of agents involved in constraint j
@@ -768,7 +790,7 @@ class GNEP_LQ():
                         i1 = int(ii[0].item())  # first agent involved
                         for k in range(1, len(ii)):  # loop not executed if only one agent involved
                             i2 = int(ii[k].item())  # other agent involved
-                            m.addConstr(mu[i1][j] == mu[i2][j], name=f"variational_eq_constr_{j}")
+                            m.addConstr(mu[i1][mu_map[j, i1]] == mu[i2][mu_map[j, i2]], name=f"variational_eq_constr_{j}")
 
             if has_pwa_objective:
                 # (e) eps[k] >= D[k](i,:) x + E[k](i,:) p + h[k](i), i=1..nk
@@ -863,7 +885,25 @@ class GNEP_LQ():
             Verbosity level: 0 = None, 1 = minimal, 2 = detailed.
         solver_options : dict
             Dictionary of solver-specific options to set before solving (not required by MIP solvers).
+            
+            For 'prox_admm' solver, the following options are supported (see prox_admm_gne.py for details):
+                maxiter : int
+                    Maximum number of ADMM iterations
+                rho : float
+                    Augmented Lagrangian parameter
+                tol : float
+                    Stopping tolerance
+                gamma : float
+                    Proximal operator parameter
+                x0 : array_like
+                    Initial guess for the ADMM iterations
 
+            For 'highs' and 'gurobi' solvers, the following options are supported:
+                time_limit : float
+                    Time limit in seconds
+                mip_gap : float
+                    Relative MIP gap tolerance
+                    
         Returns
         -------
         sol : SimpleNamespace (or list of SimpleNamespace, if multiple solutions are searched for)
@@ -913,6 +953,9 @@ class GNEP_LQ():
             if verbose >= 1:
                 print("Solving MIP problem ...")
 
+            if solver_options is None:
+                solver_options = {}
+
             if self.solver == 'highs':
                 highspy = get_highspy()
                 idx_lam = self.idx_lam
@@ -922,9 +965,20 @@ class GNEP_LQ():
                 inf = highspy.kHighsInf
                 if verbose < 2:
                     self.mip.setOptionValue("log_to_console", False)
+                    
+                if "time_limit" in solver_options:
+                    self.mip.setOptionValue("time_limit", solver_options["time_limit"])
+                if "mip_gap" in solver_options:
+                    self.mip.setOptionValue("mip_rel_gap", solver_options["mip_gap"])
+
             else:
                 gp = get_gurobi()
                 self.mip.model.setParam('OutputFlag', verbose >=2)
+                
+                if "time_limit" in solver_options:
+                    self.mip.model.setParam('TimeLimit', solver_options["time_limit"])
+                if "mip_gap" in solver_options:
+                    self.mip.model.setParam('MIPGap', solver_options["mip_gap"])
 
             x = None
             p = None
@@ -946,6 +1000,8 @@ class GNEP_LQ():
                     status_str = self.mip.modelStatusToString(model_status)
 
                     if (status != highspy.HighsStatus.kOk) or (model_status != highspy.HighsModelStatus.kOptimal):
+                        if verbose >= 1:
+                            print(f"HiGHS solver status: {status_str}")
                         go = False
                 else:
                     self.mip.model.optimize()
@@ -1073,12 +1129,8 @@ class GNEP_LQ():
                     gamma = 1.0
                 else:
                     gamma = solver_options["gamma"]
-                if "cvx_solver" not in solver_options:
-                    cvx_solver = "OSQP"
-                else:                    
-                    cvx_solver = solver_options["cvx_solver"]
             
-            sol = solve_prox_admm(self.dim, self.mip.Q, self.mip.c, self.A, self.mip.b, C=self.mip.Aeq, d=self.mip.beq, lb=self.lb, ub=self.ub, x0=x0, rho=rho, gamma=gamma, maxiter=maxiter, tol=tol, verbose=verbose, cvx_solver=cvx_solver)
+            sol = solve_prox_admm(self.dim, self.mip.Q, self.mip.c, self.A, self.mip.b, C=self.mip.Aeq, d=self.mip.beq, lb=self.lb, ub=self.ub, x0=x0, rho=rho, gamma=gamma, maxiter=maxiter, tol=tol, verbose=verbose)
             sol.p = self.single_p            
             sol.eps = None
             sol.delta = None

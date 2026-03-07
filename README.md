@@ -310,7 +310,7 @@ To solve a **game-design** problem with objective $J$, use the following structu
 ```python
 from nashopt import ParametricGNEP
 
-pgnep = ParametricGNEP(sizes, npar=2, f=f, g=g, ng=1, lb=lb, ub=ub, Aeq=Aeq, beq=beq, h=n, nh=nh, Seq=Seq)
+pgnep = ParametricGNEP(sizes, npar=2, f=f, g=g, ng=1, lb=lb, ub=ub, Aeq=Aeq, beq=beq, h=h, nh=nh, Seq=Seq)
 
 sol = pgnep.solve(J, pmin, pmax)
 ```
@@ -388,6 +388,10 @@ $$
 
 or the sum of both, where in this case the optimal parameters $p$ are determined by MIQP (only Gurobi supported).
 
+For the special case of variational GNEs and fixed parameter $p$, by treating the vector of slack variables for the shared and local inequality constraints appearing in the game as a further player, the problem can be also solved by the proximal ADMM method of [2] by passing the argument `solver='prox-admm'`.
+
+[2] E. Börgens and C. Kanzow, "ADMM-type methods for generalized Nash equilibrium problems in Hilbert spaces," SIAM Journal on Optimization, vol. 31, n.1, pp. 377-403, 2021.
+
 ## Game-Theoretic Control
 We consider non-cooperative multi-agent control problems where each agent only controls a subset of the input vector $u$ of a discrete-time linear dynamical system 
 
@@ -406,25 +410,29 @@ For solving non-cooperative linear quadratic regulation (LQR) games, you can use
 ```python
 from nashopt import NashLQR
 
-nash_lqr = NashLQR(sizes, A, B, Q, R, dare_iters=dare_iters)
-sol = nash_lqr.solve(verbose=2)
+nash_lqr = NashLQR(sizes, A, B, Q, R, dare_iters=50)
+sol = nash_lqr.solve()
 sol.K_Nash=K_Nash
 ```
 
-where `sizes` contains the input sizes $[n_1,\ldots,n_N]$, $Q=[Q_1,\ldots,Q_N]$ are the full-state weight matrices, and $R=[R_1,\ldots,R_N]$ the input weight matrices used by agent $i$ to weight $u_i$. The number `dare_iters` is the number of fixed-point iterations used to find an approximate solution of the discrete algebraic Riccati equation for each agent.
+where `sizes` contains the input sizes $[n_1,\ldots,n_N]$, $Q=[Q_1,\ldots,Q_N]$ are the full-state weight matrices, and $R=[R_1,\ldots,R_N]$ the input weight matrices used by agent $i$ to weight $u_i$. The number `dare_iters` is the number of fixed-point iterations used to find an approximate solution of the discrete algebraic Riccati equation for each agent given the
+other agents' gains.
 
 You can retrieve extra information after solving the Nash equilibrium problem, such as the KKT residual `sol.residual`, useful to verify whether an equilibrium was found, the centralized LQR gain `sol.K_centralized` (for comparison), and other statistics `sol.stats=stats`.
 
 By default, the Nash equilibrium is found by letting agent $i$ minimize the difference between $K_i$ and the LQR gain for the dynamics $(A -B_{-i}K_{-i}, B_i)$. 
 
+By calling instead 
+
 ```python
-nash_lqr = NashLQR(sizes, A, B, Q, R, dare_iters=dare_iters, method='riccati', riccati_iters=100, stop_tol=1e-5)
+nash_lqr = NashLQR(sizes, A, B, Q, R, dare_iters=50)
+sol = nash_lqr.solve(method='riccati', riccati_iters=100, stop_tol=1e-5)
 ```
 
-solve instead the coupled discrete-time algebraic Riccati equations using `riccati_iters` Riccati-based iterations (best responses) as described in [1, Section III.B], until convergence within `stop_tol`.
+with `method='riccati'`, the coupled discrete-time algebraic Riccati equations is solved instead by using `riccati_iters` Riccati-based iterations (best responses) as described in [3, Section III.B], until convergence within `stop_tol`.
 
-[1] B. Nortman, A. Monti, M. Sassano, T. Mylvaganam, "Nash Equilibria for Linear Quadratic
-Discrete-Time Dynamic Games via Iterative and Data-Driven Algorithms", IEEE Trans. Autom. Contr., vol. 69, no. 10, October 2024.
+[3] B. Nortman, A. Monti, M. Sassano, T. Mylvaganam, "Nash Equilibria for Linear Quadratic
+Discrete-Time Dynamic Games via Iterative and Data-Driven Algorithms," IEEE Trans. Autom. Contr., vol. 69, no. 10, October 2024.
 
 ### Game-Theoretic Model Predictive Control
 We now want to make the output vector $y(t)$ of the system track a given setpoint $r(t)$.
@@ -434,7 +442,7 @@ over a prediction horizon of $T$ steps, where $\Delta u_k=u_k-u_{k-1}$, by minim
 
 $$
 q_{\epsilon,i}^\top \epsilon_i + 
-\sum_{k=0}^{T-1} (y_{k+1}-r(t))^\top Q_i (y_{k+1}-r(t))
+\sum_{k=0}^{T-1} (y_{k+1}-r(t))^\top Q_{y,i} (y_{k+1}-r(t))
       + \Delta u_{i,k}^\top Q_{\Delta u,i}\Delta u_{i,k}
 $$
 
@@ -450,7 +458,7 @@ $$
 \end{array}
 $$
 
-where $Q_i\succeq 0$, $Q_{\Delta u,i}\succeq 0$ and $\epsilon_i\geq 0$ is a slack variable
+where $Q_{y,i}\succeq 0$, $Q_{\Delta u,i}\succeq 0$ and $\epsilon_i\geq 0$ is a slack variable
 used to soften shared output constraints (with linear penalty $q_{\epsilon,i}\geq 0$). Each agent's MPC problem can be simplified by imposing the constraints only on a shorter constraint horizon of $T_c<T$ steps.
 
 You can use the `NashLinearMPC` class to define the game-theoretic MPC problem:
