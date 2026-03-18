@@ -16,3 +16,4 @@ def eval_residual(res, verbose, f_evals, elapsed_time):
             print(
                 f"\033[1;33mWarning: the KKT residual norm > {warn_tol}, an equilibrium may not have been found.\033[0m")
     return norm_res
+

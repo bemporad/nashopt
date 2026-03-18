@@ -133,8 +133,8 @@ for case in range(2):
         f"{'game-theoretic MPC' if not centralized else 'centralized MPC'}")
     ax[1].set_xlabel('time step $t$')
     plt.show()
-    plt.savefig(
-        f"example_linear_MPC_{'nash' if not centralized else 'centralized'}.pdf", bbox_inches='tight')
+    #plt.savefig(
+    #    f"example_linear_MPC_{'nash' if not centralized else 'centralized'}.pdf", bbox_inches='tight')
 
     if add_xu_constraint:
         ax_c.plot(time, (Acx@X.T+Acu@U.T+Acdu@(np.diff(np.vstack((u1.T,U)), axis=0).T)).reshape(-1), color=colors[case], linewidth=4, label=f'linear constraint ({"game-theoretic" if not centralized else "centralized"})')

@@ -63,11 +63,4 @@ print(f"KKT evaluations   = {int(stats_vgne.kkt_evals): 3d}")
 print(f"Elapsed time:       {stats_vgne.elapsed_time: .2f} seconds")
 
 # check best responses of all agents at the computed GNE
-for i in range(gnep.N):
-    sol_vgne = gnep.best_response(i, x_star_vgne, rho=1.e8)
-    x_br_vgne, fbr_opt_vgne, iters_vgne = sol_vgne.x, sol_vgne.f, sol_vgne.stats.iters
-    print(f"Agent {i}'s BR at the GNE: ", end="")
-    print(
-        f"|x_br-x_star| = {jnp.linalg.norm(x_br_vgne-x_star_vgne): 10.2g}", end="")
-    # print(f", fbr_opt = {fbr_opt_vgne: 10.7g}")
-    print(f" [{iters_vgne: 2d} L-BFGS-B iter(s)]")
+dx, df = gnep.check_equilibrium(x_star_vgne, rho=1.e8)

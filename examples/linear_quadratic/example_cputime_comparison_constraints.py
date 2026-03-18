@@ -108,4 +108,4 @@ if vals[-1] not in ticks:
     ticks.append(vals[-1])
 ax1.set_xticks(ticks)
 plt.show()
-plt.savefig("example_cputime_comparison_constraints.pdf", bbox_inches='tight')
+#plt.savefig("example_cputime_comparison_constraints.pdf", bbox_inches='tight')

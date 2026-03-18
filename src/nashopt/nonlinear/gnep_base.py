@@ -61,6 +61,11 @@ class GNEP():
         self.nvar = sum(sizes)  # number of variables
         self.i2 = np.cumsum(sizes)  # x_i = x(i1[i]:i2[i])
         self.i1 = np.hstack((0, self.i2[:-1]))
+        not_i = [list(range(sizes[0], self.nvar))]
+        for i in range(1, self.N):
+            not_i.append(list(range(self.i2[i-1])) + list(range(self.i2[i], self.nvar)))
+        self.not_i = not_i
+
         if len(f) != self.N:
             raise ValueError(
                 f"List of functions f must contain {self.N} elements, you provided {len(f)}.")
@@ -435,12 +440,14 @@ class GNEP():
         sol.norm_residual = norm_res
         return sol
 
-    def best_response(self, i, x, rho=1e5, maxiter=200, tol=1e-8):
+    def best_response(self, i, x, p=None, rho=1e5, maxiter=200, tol=1e-8):
         """
         Compute best response for agent i via SciPy's L-BFGS-B:
 
             min_{x_i} f_i(x_i, x_{-i}) + rho * (sum_j max(g_i(x), 0)^2 + ||Aeq x - beq||^2 + ||h(x)||^2)
             s.t. lb_i <= x_i <= ub_i
+            
+        For parametric problems, the agent's objective is f_i(x_i, x_{-i}, p) and the shared constraints are g(x, p), h(x, p), Aeq x = beq + Seq p. The best response is computed at the current joint strategy x and parameters p. 
 
         Parameters:
         -----------
@@ -448,6 +455,8 @@ class GNEP():
             Index of the agent for which to compute the best response.
         x : array-like
             Current joint strategy of all agents.
+        p : array-like, optional
+            Current game parameters. Only used for parametric GNEPs.
         rho : float, optional
             Penalty parameter for constraint violations.
         maxiter : int, optional
@@ -472,18 +481,32 @@ class GNEP():
 
         t0 = time.time()
 
-        @jax.jit
-        def fun(xi):
-            # reconstruct full x with x_i replaced
-            x_i = x.at[i1:i2].set(xi)
-            f = jnp.array(self.f[i](x_i)).reshape(-1)
-            if self.ng > 0:
-                f += rho*jnp.sum(jnp.maximum(self.g(x_i), 0.0)**2)
-            if self.neq > 0:
-                f += rho*jnp.sum((self.Aeq @ x_i - self.beq)**2)
-            if self.nh > 0:
-                f += rho*jnp.sum(self.h(x_i)**2)
-            return f[0]
+        if p is None:
+            @jax.jit
+            def fun(xi):
+                # reconstruct full x with x_i replaced
+                x_i = x.at[i1:i2].set(xi)
+                f = jnp.array(self.f[i](x_i)).reshape(-1)
+                if self.ng > 0:
+                    f += rho*jnp.sum(jnp.maximum(self.g(x_i), 0.0)**2)
+                if self.neq > 0:
+                    f += rho*jnp.sum((self.Aeq @ x_i - self.beq)**2)
+                if self.nh > 0:
+                    f += rho*jnp.sum(self.h(x_i)**2)
+                return f[0]
+        else:
+            @jax.jit
+            def fun(xi):
+                # reconstruct full x with x_i replaced
+                x_i = x.at[i1:i2].set(xi)
+                f = jnp.array(self.f[i](x_i, p)).reshape(-1)
+                if self.ng > 0:
+                    f += rho*jnp.sum(jnp.maximum(self.g(x_i, p), 0.0)**2)
+                if self.neq > 0:
+                    f += rho*jnp.sum((self.Aeq @ x_i - self.beq - self.Seq @ p)**2)
+                if self.nh > 0:
+                    f += rho*jnp.sum(self.h(x_i, p)**2)
+                return f[0]
 
         li = self.lb[i1:i2]
         ui = self.ub[i1:i2]
@@ -505,6 +528,48 @@ class GNEP():
 
         sol = SimpleNamespace()
         sol.x = x_new
-        sol.f = self.f[i](x_new)
+        sol.f = self.f[i](x_new) if p is None else self.f[i](x_new, p)
         sol.stats = stats
         return sol
+
+
+    def check_equilibrium(self, x, p=None, verbose=True, **kwargs):
+        """ Check if x is a GNE by evaluating the best response of each agent at x and comparing it with x, as well as comparing the associated objective values.
+        
+        Parameters:
+        -----------
+        x : array-like
+            Joint strategy to check for equilibrium.
+        p : array-like, optional
+            Game parameters to check for equilibrium. Only used for parametric GNEPs.
+        verbose : bool, optional
+            If True, print the distance between x and the best response for each agent, as well as the difference in objective values.
+        kwargs : dict, optional
+            Additional keyword arguments to pass to the best response computation, such as rho, maxiter, tol.
+            
+        Returns:
+        -----------
+        dx : ndarray
+            Difference between the current strategy and the collection of best responses for each agent.
+        df : ndarray
+            Difference between the current objective values and the optimal objective values for each agent.
+        """
+
+        dx = np.empty(self.nvar)
+        df = np.empty(self.N)
+        for i in range(self.N):
+            xi = x[self.i1[i]:self.i2[i]]
+            if p is None:
+                sol_i = self.best_response(i, x, **kwargs)
+            else:
+                sol_i = self.best_response(i, x, p, **kwargs)
+            xstar_i = sol_i.x[self.i1[i]:self.i2[i]]
+            fstar_i = sol_i.f
+            fi = self.f[i](x) if p is None else self.f[i](x, p)
+            df[i] = fi - fstar_i
+            dx[self.i1[i]:self.i2[i]] = xi - xstar_i
+            if verbose:
+                dx_norm = np.linalg.norm(dx[self.i1[i]:self.i2[i]])
+                print(f"Agent {i:>2d}'s BR: ‖x[{i:>2d}] - br(x[-{i:>2d}])‖ = {dx_norm:>12.4E}, ", end="")
+                print(f"f[{i:>2d}](x) - f*[{i:>2d}] = {np.abs(df[i]):>12.4E}")
+        return dx, df

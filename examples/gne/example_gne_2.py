@@ -48,3 +48,6 @@ for i in range(gnep.N):
 print(f"KKT residual norm = {float(jnp.linalg.norm(residual)): 10.7g}")
 print(f"KKT evaluations   = {int(stats.kkt_evals): 3d}")
 print(f"Elapsed time:       {stats.elapsed_time: .2f} seconds")
+
+# check best responses of all agents at the computed GNE
+dx, df = gnep.check_equilibrium(x_star)

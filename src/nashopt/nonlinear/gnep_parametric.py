@@ -91,10 +91,11 @@ class ParametricGNEP(GNEP):
         """
         Design game-parameter vector p for the GNEP by solving:
 
-            min_{p} J(x*(p), p)
-            s.t. pmin <= p <= pmax
+            min_{x,p} J(x, p)
+            s.t. x = x*(p)
+                 pmin <= p <= pmax
 
-        where x*(p) is the GNE solution for parameters p.
+        where x*(p) is a GNE for parameters p.
 
         Parameters:
         -----------
@@ -347,45 +348,29 @@ class ParametricGNEP(GNEP):
         x_i     : best response of agent i
         res     : SciPy optimize result
         """
-        t0 = time.time()
         
-        i1 = self.i1[i]
-        i2 = self.i2[i]
-        x = jnp.asarray(x)
+        return super().best_response(i, x, p, rho=rho, maxiter=maxiter, tol=tol)
 
-        @jax.jit
-        def fun(xi):
-            # reconstruct full x with x_i replaced
-            x_i = x.at[i1:i2].set(xi)
-            f = jnp.array(self.f[i](x_i, p)).reshape(-1)
-            if self.ng > 0:
-                f += rho*jnp.sum(jnp.maximum(self.g(x_i, p), 0.0)**2)
-            if self.neq > 0:
-                f += rho*jnp.sum((self.Aeq @ x_i - self.beq - self.Seq @ p)**2)
-            if self.nh > 0:
-                f += rho*jnp.sum(self.h(x_i, p)**2)
-            return f[0]
-
-        li = self.lb[i1:i2]
-        ui = self.ub[i1:i2]
-
-        options = {'iprint': -1, 'maxls': 20, 'gtol': tol, 'eps': tol,
-                   'ftol': tol, 'maxfun': maxiter, 'maxcor': 10}
-
-        solver = ScipyBoundedMinimize(
-            fun=fun, tol=tol, method="L-BFGS-B", maxiter=maxiter, options=options)
-        xi, state = solver.run(x[i1:i2], bounds=(li, ui))
-        x_new = np.asarray(x.at[i1:i2].set(xi))
+    def check_equilibrium(self, x, p, verbose=True, **kwargs):
+        """ Check if x is a GNE at a given p by evaluating the best response of each agent at x and comparing it with x, as well as comparing the associated objective values.
         
-        t0 = time.time() - t0
+        Parameters:
+        -----------
+        x : array-like
+            Joint strategy to check for equilibrium.
+        p : array-like
+            Current game parameters.
+        verbose : bool, optional
+            If True, print the distance between x and the best response for each agent, as well as the difference in objective values.
+        kwargs : dict, optional
+            Additional keyword arguments to pass to the best response computation, such as rho, maxiter, tol.
+            
+        Returns:
+        -----------
+        dx : ndarray
+            Difference between the current strategy and the collection of best responses for each agent.
+        df : ndarray
+            Difference between the current objective values and the optimal objective values for each agent.
+        """
 
-        stats = SimpleNamespace()
-        stats.elapsed_time = t0
-        stats.solver = state
-        stats.iters = state.iter_num
-
-        sol = SimpleNamespace()
-        sol.x = x_new
-        sol.f = self.f[i](x_new, p)
-        sol.stats = stats
-        return sol
+        return super().check_equilibrium(x, p, verbose=verbose, **kwargs)

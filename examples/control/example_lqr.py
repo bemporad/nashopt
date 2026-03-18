@@ -13,11 +13,11 @@ mpl.rcParams.update({
     "text.usetex": True,
     "font.family": "serif",
     "font.serif": ["Computer Modern Roman"],
-    "axes.labelsize": 20,
-    "font.size": 20,
-    "legend.fontsize": 20,
-    "xtick.labelsize": 20,
-    "ytick.labelsize": 20,
+    "axes.labelsize": 16,
+    "font.size": 16,
+    "legend.fontsize": 16,
+    "xtick.labelsize": 16,
+    "ytick.labelsize": 16,
 })
 
 np.random.seed(0)
@@ -83,7 +83,7 @@ print(f"closed-loop system with \033[1;31mNash gains\033[0m:       {rad_nash:.4f
 print(f"closed-loop system with \033[1;35mcentralized LQR\033[0m:  {rad_cen:.4f}")
 
 
-Tsim = 20 # number of closed-loop simulation steps
+Tsim = 21 # number of closed-loop simulation steps
 M = 10   # number of initial conditions
 x0 = np.random.randn(nx,M)
 C = np.ones(nx).reshape(1,-1)  # output matrix
@@ -91,7 +91,7 @@ ny = 1  # number of outputs
 
 colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
 time = range(Tsim)
-fig, ax = plt.subplots(2,1,figsize=(8,8))
+fig, ax = plt.subplots(1,2,figsize=(10,3))
 fig.subplots_adjust(hspace=0.3)
 
 for case in range(2):
@@ -122,9 +122,8 @@ for case in range(2):
             
         ax[case].plot(time, Y, color=colors[j], linewidth=4)
         ax[case].set_title(f"{'game-theoretic' if not centralized else 'centralized'} LQR")
-ax[1].set_xlabel('time step $t$')
-ax[0].grid()
-ax[1].grid()
+    ax[case].set_xlabel('time step $t$')
+    ax[case].grid()
 plt.show()
 #plt.savefig("example_LQR.pdf", bbox_inches='tight')
 

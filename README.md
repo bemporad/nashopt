@@ -214,6 +214,14 @@ for i in range(gnep.N):
 [ 1.  -0.  -0.   0.5]
 ```
 
+or by calling
+
+```python
+gnep.check_equilibrium(x_star)
+```
+
+to have a report of best-response and value function deviations.
+
 To add linear equality constraints, use the following:
 
 ```python

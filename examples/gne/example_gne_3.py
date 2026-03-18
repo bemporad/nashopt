@@ -50,3 +50,6 @@ print("=== GNE solution ===")
 print(f"x = {x_star}")
 for i in range(gnep.N):
     print(f"lambda[{i}] = {lam_star[i]}")
+
+# check best responses of all agents at the computed GNE
+dx, df = gnep.check_equilibrium(x_star)
