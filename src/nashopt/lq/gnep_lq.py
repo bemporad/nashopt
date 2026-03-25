@@ -97,7 +97,7 @@ class GNEP_LQ():
 
         (C) 2025-2026 Alberto Bemporad
         """
-
+        
         nx = sum(dim)  # total number of variables
         N = len(dim)  # number of agents
         if not len(Q) == N:
@@ -107,6 +107,9 @@ class GNEP_LQ():
         if F is not None and not len(F) == N:
             raise ValueError("Length of F must be equal to number of agents")
 
+
+        # Make local copies of input data to avoid modifying user data
+        Q = [Qi.copy() for Qi in Q]
         for i in range(N):
             if not Q[i].shape == (nx, nx):
                 raise ValueError(f"Q[{i}] must be of shape ({nx},{nx})")
@@ -164,9 +167,11 @@ class GNEP_LQ():
             if not pmax.size == npar:
                 raise ValueError(f"pmax must have {npar} elements")
             if is_single_p:
+                c = [ci.copy() for ci in c]
                 for i in range(N):
                     c[i] = c[i] + F[i] @ single_p  # absorb fixed p into c
                 if has_pwa_objective:
+                    h_pwa = [hi.copy() for hi in h_pwa]
                     for k in range(nJ):
                         h_pwa[k] = h_pwa[k] + E_pwa[k] @ single_p  # absorb fixed p into h
         else:

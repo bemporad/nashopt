@@ -357,7 +357,20 @@ $$
 
 the equilibrium conditions can be expressed as a mixed-integer linear program (MILP) using a "big-M" approach. `nashopt` support both the open-source solver `HiGHS` and `Gurobi` to solve the MILP. 
 
-Example:
+To solve a single LQ game with $N$ agents, minimizing $\frac{1}{2}x'Q[i]x+c[i]'x$ under the shared
+constraints $Ax\leq b$ and local constraints $lb\leq x\leq ub$, use:
+
+```python
+from nashopt import GNEP_LQ
+
+gnep = GNEP_LQ(sizes, Q, c, lb=lb, ub=ub, A=A, b=b, M=1e4, solver='highs')
+sol = gnep.solve()
+x = sol.x
+```
+
+To get a variational GNE, add the flag `variational=True` when defining the game via `GNEP_LQ`, which forces equal Lagrange multipliers associated with shared constraints for all agents.
+
+For defining *parametric* LQ games, add the related input arguments (`F`, `S`, `pmin`, `pmax`):
 
 ```python
 from nashopt import GNEP_LQ
@@ -367,6 +380,7 @@ gnep = GNEP_LQ(sizes, Q, c, F, lb=lb, ub=ub, pmin=pmin,
 sol = gnep.solve()
 x = sol.x
 ```
+In the case `pmin`=`pmax`, this corresponds to a single LQ-GNE with linear costs `c[i] + F[i] @ pmin` and right-hand-side `b + S @ pmin` of the shared constraints.
 
 We can also extract multiple solutions, if any exist, that correspond to different combinations of active constraints at optimality. For example, to get a list of the first 10 solutions:
 

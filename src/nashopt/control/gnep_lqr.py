@@ -16,7 +16,7 @@ from ..nonlinear.gnep_base import GNEP
 
 class NashLQR():
     def __init__(self, sizes, A, B, Q, R, dare_iters=50):
-        """Set up a discrete-time linear quadratic dynamic game (Nash-LQR game) with N agents.
+        """Set up a discrete-time feedback linear quadratic dynamic game (Nash-LQR game) with N agents.
 
         The dynamics are given by
 
