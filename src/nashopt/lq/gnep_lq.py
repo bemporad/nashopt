@@ -1198,6 +1198,13 @@ class GNEP_LQ():
                 best response of agent i, within the full vector x.
             f : ndarray
                 optimal objective value for agent i at best response, fi(x).
+            lam : ndarray
+                dual variables associated with the constraints of agent i's optimization problem, ordered as:
+                - shared inequality constraints (in the order they are defined in the problem, excluding those not involving agent i)
+                - finite lower bounds for agent i
+                - finite upper bounds for agent i
+            eta : ndarray
+                dual variables associated with the equality constraints of agent i's optimization problem, ordered as they are defined in the problem, excluding those not involving agent i
             stats : Statistics about the optimization result.
         """
         
