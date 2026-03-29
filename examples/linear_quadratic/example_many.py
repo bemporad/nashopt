@@ -170,6 +170,8 @@ for ex in range(1, 11+1):
         # print("lam:", lam)
         print("delta:", delta)
 
+        gnep_lq.check_equilibrium(x, p, verbose=1)
+
         print("Check residuals:")
 
         ncon = A.shape[0] if A is not None else 0

@@ -12,7 +12,7 @@ from jaxopt import ScipyBoundedMinimize
 from scipy.optimize import least_squares
 from types import SimpleNamespace
 
-from .._common.report import eval_residual
+from .._common.report import eval_residual, check_equilibrium_common
 
 jax.config.update("jax_enable_x64", True)
 
@@ -555,21 +555,4 @@ class GNEP():
             Difference between the current objective values and the optimal objective values for each agent.
         """
 
-        dx = np.empty(self.nvar)
-        df = np.empty(self.N)
-        for i in range(self.N):
-            xi = x[self.i1[i]:self.i2[i]]
-            if p is None:
-                sol_i = self.best_response(i, x, **kwargs)
-            else:
-                sol_i = self.best_response(i, x, p, **kwargs)
-            xstar_i = sol_i.x[self.i1[i]:self.i2[i]]
-            fstar_i = sol_i.f
-            fi = self.f[i](x) if p is None else self.f[i](x, p)
-            df[i] = fi - fstar_i
-            dx[self.i1[i]:self.i2[i]] = xi - xstar_i
-            if verbose:
-                dx_norm = np.linalg.norm(dx[self.i1[i]:self.i2[i]])
-                print(f"Agent {i:>2d}'s BR: ‖x[{i:>2d}] - br(x[-{i:>2d}])‖ = {dx_norm:>12.4E}, ", end="")
-                print(f"f[{i:>2d}](x) - f*[{i:>2d}] = {np.abs(df[i]):>12.4E}")
-        return dx, df
+        return check_equilibrium_common(self, x, p, verbose, **kwargs)

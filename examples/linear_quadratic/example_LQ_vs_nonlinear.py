@@ -81,10 +81,14 @@ for test in range(0,2):
 
         if sol.status_str in ["Optimal", "Converged"]:
             print_residuals(x,p,lam)
+            
+        gnep.check_equilibrium(x, p)
 
     f = []
     for i in range(N):
-        f.append(jax.jit(lambda x, i=i: 0.5*x.T@Q[i]@x + c[i].T@x))
+        Qi = jnp.array(Q[i])
+        ci = jnp.array(c[i])
+        f.append(jax.jit(lambda x, i=i: 0.5*x.T@Qi@x + ci.T@x))
 
     @jax.jit
     def g(x):
@@ -111,3 +115,5 @@ for test in range(0,2):
     print(f"KKT residual norm = {float(jnp.linalg.norm(residual)): 10.7g}")
     print(f"KKT evaluations   = {int(stats.kkt_evals): 3d}")
     print(f"Elapsed time:       {stats.elapsed_time: .4f} seconds")
+
+    gnep_kkt.check_equilibrium(x_star)

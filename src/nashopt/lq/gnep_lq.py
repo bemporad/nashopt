@@ -7,9 +7,12 @@
 import numpy as np
 import time
 from types import SimpleNamespace
+from functools import partial
+import daqp
 from .._common.optional_deps import get_gurobi, get_highspy
 from .prox_admm_gne import solve as solve_prox_admm
-
+from .._common.report import check_equilibrium_common
+    
 class GNEP_LQ():
     def __init__(self, dim, Q, c, F=None, lb=None, ub=None, pmin=None, pmax=None, A=None, b=None, S=None, Aeq=None, beq=None, Seq=None, D_pwa=None, E_pwa=None, h_pwa=None, Q_J=None, c_J=None, M=1e4, variational=False, solver="highs"):
         """Given a (multiparametric) generalized Nash equilibrium problem with N agents,
@@ -144,13 +147,13 @@ class GNEP_LQ():
             pmax = np.asarray(pmax).reshape(-1)
         has_params = (pmin is not None) and (pmax is not None) and (
             pmin.size > 0) and (pmax.size > 0)
+        single_p = None
         if has_params:
             is_single_p = np.all(pmin == pmax)
             if is_single_p:
                 single_p = pmin  # fixed parameter value
         else:
             is_single_p = False
-            single_p = None
                 
         if has_params:
             npar = F[0].shape[1]
@@ -855,6 +858,24 @@ class GNEP_LQ():
         else:
             self.nJ = 0
 
+        self.Q = Q
+        self.c = c
+        self.F = F
+        self.b = b
+        self.S = S
+        self.Aeq = Aeq
+        self.beq = beq
+        self.Seq = Seq
+
+        self.nvar = nx
+        self.i2 = np.cumsum(dim)  # x_i = x(i1[i]:i2[i])
+        self.i1 = np.hstack((0, self.i2[:-1]))
+        not_i = [list(range(dim[0], self.nvar))]
+        for i in range(1, self.N):
+            not_i.append(list(range(self.i2[i-1])) + list(range(self.i2[i], self.nvar)))
+        self.not_i = not_i # x_{-1} = x(not_i[i])
+
+
     def solve(self, max_solutions=1, verbose=0, solver_options=None):
         """Solve a linear quadratic generalized GNE problem and associated game-design problem via mixed-integer linear programming (MILP) or mixed-integer quadratic programming (MIQP):
 
@@ -1150,3 +1171,165 @@ class GNEP_LQ():
             return None
         else:
             return solutions
+
+    def best_response(self, i, x, p=None,  active_ineq=None, active_lb=None, active_ub=None):
+        """Compute the best response of agent i to the strategies x(-i) of the other agents and parameter p (if any) by solving a single-agent QP problem.
+
+        Parameters
+        ----------
+        i : int
+            Index of the agent whose best response is computed.
+        x : array_like
+            Current strategy profile of all agents (including agent i).
+        p : array_like, optional
+            Current value of the parameter vector (if any).
+        active_ineq : list of int, optional
+            Indices of active shared inequality constraints, only used for initial guess
+        active_lb : list of int, optional
+            Indices of active lower bound constraints for agent i, only used for initial guess
+        active_ub : list of int, optional
+            Indices of active upper bound constraints for agent i, only used for initial guess
+
+        Returns:
+        -----------
+        sol : SimpleNamespace
+            Solution object with fields:
+            x : ndarray
+                best response of agent i, within the full vector x.
+            f : ndarray
+                optimal objective value for agent i at best response, fi(x).
+            stats : Statistics about the optimization result.
+        """
+        
+        xmi = x[self.not_i[i]]  # strategies of other agents
+        i1 = self.i1[i]
+        i2 = self.i2[i]
+        
+        if self.has_params and p is None:
+            raise ValueError("Parameter vector p must be provided to compute best response when parameters are present in the problem.")
+        if self.is_single_p and p is not None and not np.allclose(p, self.single_p):
+            # At construction, the single fixed parameter vector was used to redefine the problem as a standard GNEP without parameters.
+            raise ValueError("Parameter vector p cannot be different from the fixed p used at object construction")
+                    
+        Qi = np.array(self.Q[i][i1:i2,i1:i2])
+        ci = self.c[i][i1:i2]+(self.Q[i][i1:i2, :][:, self.not_i[i]]@xmi).reshape(-1)
+        if self.has_params and self.F is not None:
+            ci += (self.F[i][i1:i2, :]@p).reshape(-1)
+
+        if self.b is not None:
+            b = self.b-(self.A[:,self.not_i[i]]@xmi).reshape(-1)
+            if self.has_params and self.S is not None:
+                b += (self.S@p).reshape(-1)
+        else:
+            b = None
+                
+        if self.beq is not None:
+            beq = self.beq-(self.Aeq[:,self.not_i[i]]@xmi).reshape(-1)
+            if self.has_params and self.Seq is not None:
+                beq += (self.Seq@p).reshape(-1)
+        else:
+            beq = None
+        
+        A = self.A[:,i1:i2] if self.A is not None else None
+        Aeq = self.Aeq[:,i1:i2] if self.Aeq is not None else None
+        
+        lb = self.lb[i1:i2] if self.lb is not None else None
+        ub = self.ub[i1:i2] if self.ub is not None else None
+
+        ncon = A.shape[0] if A is not None else 0
+        nvar = self.dim[i]
+        neq = Aeq.shape[0] if Aeq is not None else 0
+        
+        AA = np.zeros((ncon+neq, nvar))
+        bu = np.zeros(ncon+neq)
+        bl = np.zeros(ncon+neq)
+        
+        if ncon>0:
+            AA[:ncon, :] = A
+            bu[:ncon] = b
+            bl[:ncon] = -np.inf*np.ones(ncon)
+        if neq>0:
+            AA[ncon:ncon+neq, :] = Aeq
+            bu[ncon:ncon+neq] = beq
+            bl[ncon:ncon+neq] = beq
+        if lb is not None or ub is not None:
+            AA = np.vstack((AA, np.eye(nvar)))
+        if lb is not None:
+            bl = np.hstack((bl, lb))
+        else:
+            bl = np.hstack((bl, -np.inf*np.ones(nvar)))
+        if ub is not None:
+            bu = np.hstack((bu, ub))
+        else:
+            bu = np.hstack((bu, np.inf*np.ones(nvar)))
+        
+        # Initial active set
+        sense = np.zeros(AA.shape[0], dtype=np.int32)
+        if neq>0:
+            sense[ncon:ncon+neq] = 5 # equality constraints are active and immutable
+        if active_ineq is not None:
+            sense[:ncon][active_ineq] = 1 # active inequality constraints start as active at the upper-bound but are mutable
+        if active_lb is not None:
+            sense[ncon+neq:][active_lb] = 3 # active lower bounds start as active at the lower-bound but are mutable
+        if active_ub is not None:
+            sense[ncon+neq:][active_ub] = 1 # active upper bounds start as active at the upper-bound but are mutable
+
+        xi, _, flag, report = daqp.solve(Qi, ci, AA, bu, bl, sense=sense) # Warm-start x0 not supported by daqp, only active set, if provided
+
+        if flag != 1:
+            raise ValueError(f"QP solver failed with flag {flag}. See report for details:\n {report}")
+
+        # dual variables
+        lam = report["lam"]
+        lam_ub = np.maximum(lam[ncon+neq:], 0.) if self.ub is not None else np.array([])
+        lam_lb = np.maximum(-lam[ncon+neq:], 0.) if self.lb is not None else np.array([])
+        lam = np.hstack((lam[:ncon], lam_lb, lam_ub)) # dual variables for inequality constraints, lower bounds, and upper bounds
+        eta = lam[ncon:ncon+neq] if neq>0 else np.array([]) # dual variables for equality constraints
+
+        x_sol = x.copy()
+        x_sol[i1:i2] = xi
+        fi = 0.5 * x_sol.T @ self.Q[i] @ x_sol + self.c[i].T@x_sol
+        if self.has_params and self.F is not None:
+            fi += (self.F[i]@p).T @ x_sol
+
+        sol = SimpleNamespace()
+        sol.x = x_sol
+        sol.f = fi
+        sol.lam = lam
+        sol.eta = eta
+        sol.stats = {"flag": flag, "report": report}
+        return sol
+    
+    def check_equilibrium(self, x, p=None, verbose=True, **kwargs):
+        """ Check if x is a GNE by evaluating the best response of each agent at x and comparing it with x, as well as comparing the associated objective values.
+        
+        Parameters:
+        -----------
+        x : array-like
+            Joint strategy to check for equilibrium.
+        p : array-like, optional
+            Game parameters to check for equilibrium. Only used for parametric GNEPs.
+        verbose : bool, optional
+            If True, print the distance between x and the best response for each agent, as well as the difference in objective values.
+        kwargs : dict, optional
+            Additional keyword arguments to pass to the best response computation, such as rho, maxiter, tol.
+            
+        Returns:
+        -----------
+        dx : ndarray
+            Difference between the current strategy and the collection of best responses for each agent.
+        df : ndarray
+            Difference between the current objective values and the optimal objective values for each agent.
+        """
+        
+        self.nvar = self.nx
+        self.f = list()
+        for i in range(self.N):
+            if p is not None:
+                if p is not None and self.has_params and self.F is not None:
+                    self.f.append(partial(lambda x, p, Qi, ci, Fi: 0.5 * x.T @ Qi @ x + ci.T @ x + (Fi@p).T @ x, Qi=self.Q[i], ci=self.c[i], Fi=self.F[i]))
+                else:
+                    self.f.append(partial(lambda x, p, Qi, ci: 0.5 * x.T @ Qi @ x + ci.T @ x, Qi=self.Q[i], ci=self.c[i]))
+            else:
+                self.f.append(partial(lambda x, Qi, ci: 0.5 * x.T @ Qi @ x + ci.T @ x, Qi=self.Q[i], ci=self.c[i]))
+        return check_equilibrium_common(self, x, p, verbose, **kwargs)

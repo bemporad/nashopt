@@ -81,4 +81,7 @@ for norm in ['inf', '2']:
 
     print("x = ", x)
     print("p=", p)
+    
+    
 
+gnep_lq.check_equilibrium(x, p, verbose=1)
