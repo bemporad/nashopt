@@ -124,7 +124,7 @@ print(f"  {'Method':<14}  {'CPU (s)':>8}  {'||x-x_br||':>10}  {'Status / info'}"
 print(f"{'-'*62}")
 print(f"  {'Lemke':<14}  {t_lemke:8.4f}  {d_lemke:10.2e}"
       f"  {STATUS_LEMKE[res_lemke.status]},"
-      f" {res_lemke.num_iter} pivots")
+      f" {res_lemke.num_iters} pivots")
 print(f"  {'Log-IPM':<14}  {t_ipm:8.4f}  {d_ipm:10.2e}"
       f"  {'converged (ok)' if info_ipm['converged'] else 'NOT converged'},"
       f" {info_ipm['outer_iters']} outer iters,  mu={info_ipm['mu']:.1e}")
@@ -160,3 +160,4 @@ for i in range(N):
     fa = gnep_admm.cost_eval(i, x_admm)
     fm = gnep_admm.cost_eval(i, x_milp)
     print(f"  Player {i+1:2d}  {fl:+12.6f}  {fi:+12.6f}  {fa:+12.6f}  {fm:+12.6f}")
+
