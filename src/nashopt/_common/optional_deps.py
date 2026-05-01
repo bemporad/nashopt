@@ -1,6 +1,6 @@
 # NashOpt: A Python package for computing Generalized Nash Equilibria (GNE) in noncooperative games.
 #
-# Optinal dependencies for NashOpt. 
+# Optional dependencies for NashOpt. 
 #
 # (C) 2025-2026 Alberto Bemporad
 

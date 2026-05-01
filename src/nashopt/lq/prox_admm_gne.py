@@ -36,7 +36,7 @@ def solve(sizes, Q, c, A, b, C=None, d=None, lb=None, ub=None, x0=None, rho=1.0,
     (C) 2026 A. Bemporad, February 16, 2026    
     """
     
-    t0 = time.time()
+    t0 = time.perf_counter()
     
     N = len(sizes)  # number of players
     nvar = sum(sizes) # total number of optimization variables
@@ -162,7 +162,7 @@ def solve(sizes, Q, c, A, b, C=None, d=None, lb=None, ub=None, x0=None, rho=1.0,
     if p>0:
         eta_k = nuk
        
-    elapsed_time = time.time() - t0
+    elapsed_time = time.perf_counter() - t0
     if verbose:
         print(f"Prox-ADMM finished in {iter} iterations and {elapsed_time:.4f} seconds.")
 
@@ -185,7 +185,6 @@ def solve(sizes, Q, c, A, b, C=None, d=None, lb=None, ub=None, x0=None, rho=1.0,
     sol.mu = np.tile(eta_k, (N, 1)) if p>0 else None
     sol.elapsed_time = elapsed_time
     sol.num_iters = iter
-    sol.f = [0.5 * xk.T @ Q[i] @ xk + c[i].T @ xk for i in range(N)]
     sol.status_str = status_str
     return sol
 

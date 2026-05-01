@@ -182,7 +182,7 @@ class NashLQR():
         
         elif method == 'riccati':
     
-            t0 = time.time()
+            t0 = time.perf_counter()
             K_Nash = np.array(K_cen.copy())
             A = self.A
             B = self.B
@@ -210,7 +210,7 @@ class NashLQR():
                 if max_diff <= stop_tol:
                     break
                 
-            t0 = time.time() - t0
+            t0 = time.perf_counter() - t0
             print("done.") 
             
             sol.stats = SimpleNamespace()

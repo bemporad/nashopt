@@ -22,8 +22,19 @@ cpu_time_milp_highs = []
 cpu_time_milp_gurobi = []
 cpu_time_admm = []
 cpu_time_lm = []
+cpu_time_lemke = []
+cpu_time_log_ipm = []
+
+x_star_milp_highs = []
+x_star_milp_gurobi = []
+x_star_admm = []
+x_star_lm = []
+x_star_lemke = []
+x_star_log_ipm = []
 
 admm_iters = []
+lemke_iters = []
+log_ipm_iters = []
 
 for N in range(2, max_size+1):
     print(f"\n\n\033[1;35mNumber of agents: {N}\033[0m")
@@ -47,7 +58,7 @@ for N in range(2, max_size+1):
     def solve_gnep_lq(solver):
         gnep_lq = GNEP_LQ(sizes, Q, c, F=None, lb=lb, ub=ub, pmin=pmin,
                         pmax=pmax, A=A, b=b, S=None, M=1e4, 
-                        variational=True if solver=='prox_admm' else False, 
+                        variational=True if solver in ['prox_admm','lemke','log_ipm'] else False, 
                         solver=solver)
         sol = gnep_lq.solve(solver_options={'maxiter': 10000} if solver=='prox_admm' else None)
 
@@ -58,12 +69,24 @@ for N in range(2, max_size+1):
             cpu_time = sol.elapsed_time
             if solver == 'prox_admm' and not isinstance(sol, list):
                 admm_iters.append(sol.num_iters)
+            elif solver == 'lemke' and not isinstance(sol, list):
+                lemke_iters.append(sol.num_iters)
+            elif solver == 'log_ipm' and not isinstance(sol, list):
+                log_ipm_iters.append(sol.num_iters)
         
-        return cpu_time
+        return cpu_time, sol.x
 
-    cpu_time_milp_highs.append(solve_gnep_lq('highs'))
-    cpu_time_milp_gurobi.append(solve_gnep_lq('gurobi'))
-    cpu_time_admm.append(solve_gnep_lq('prox_admm'))
+    cpu_time_milp_highs.append(solve_gnep_lq('highs')[0])
+    cpu_time_milp_gurobi.append(solve_gnep_lq('gurobi')[0])
+    cpu_time_admm.append(solve_gnep_lq('prox_admm')[0])
+    cpu_time_lemke.append(solve_gnep_lq('lemke')[0])
+    cpu_time_log_ipm.append(solve_gnep_lq('log_ipm')[0])
+    
+    x_star_milp_highs.append(solve_gnep_lq('highs')[1])
+    x_star_milp_gurobi.append(solve_gnep_lq('gurobi')[1])
+    x_star_admm.append(solve_gnep_lq('prox_admm')[1])
+    x_star_lemke.append(solve_gnep_lq('lemke')[1])
+    x_star_log_ipm.append(solve_gnep_lq('log_ipm')[1])
 
     # Recompute variational GNE using Levenberg-Marquardt
     f = []
@@ -79,8 +102,11 @@ for N in range(2, max_size+1):
     x_star_vgne, lam_star_vgne, residual_vgne, stats_vgne = sol.x, sol.lam, sol.res, sol.stats
 
     cpu_time_lm.append(stats_vgne.elapsed_time)
+    x_star_lm.append(x_star_vgne)
 
 print("Iterations required by Proximal ADMM: min =", min(admm_iters), ", max =", max(admm_iters))
+print("Iterations required by Lemke's algorithm: min =", min(lemke_iters), ", max =", max(lemke_iters))
+print("Iterations required by Logarithmic IPM: min =", min(log_ipm_iters), ", max =", max(log_ipm_iters))
 
 plt.rcParams.update({'font.size': 12})
 colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
@@ -90,9 +116,13 @@ ax1.semilogy(range(2, max_size+1), cpu_time_milp_highs,
 ax1.semilogy(range(2, max_size+1), cpu_time_milp_gurobi,
              color=colors[1], linewidth=4, label='MILP - Gurobi')
 ax1.semilogy(range(2, max_size+1), cpu_time_admm,
-             color=colors[2], linewidth=4, label='ADMM')
+             color=colors[2], linewidth=4, label='Prox-ADMM')
 ax1.semilogy(range(2, max_size+1), cpu_time_lm,
              color=colors[3], linewidth=4, label='LM')
+ax1.semilogy(range(2, max_size+1), cpu_time_lemke,
+             color=colors[4], linewidth=4, label='Lemke')
+ax1.semilogy(range(2, max_size+1), cpu_time_log_ipm,
+             color=colors[5], linewidth=4, label='Log-IPM')
 ax1.set_xlabel(r'number $N$ of agents')
 ax1.set_ylabel(r'CPU time (s)')
 ax1.legend(loc='lower right')

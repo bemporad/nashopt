@@ -385,7 +385,7 @@ class GNEP():
                     - shared nonlinear equality constraints
             stats : Statistics about the optimization result.
         """
-        t0 = time.time()
+        t0 = time.perf_counter()
 
         solver = solver.lower()
 
@@ -423,7 +423,7 @@ class GNEP():
             for i in range(self.N):
                 lam.append(np.asarray(lam_star[self.ii_lam[i]]))
 
-        t0 = time.time() - t0
+        t0 = time.perf_counter() - t0
 
         norm_res = eval_residual(res, verbose, kkt_evals, t0)
                                         
@@ -479,7 +479,7 @@ class GNEP():
         i2 = self.i2[i]
         x = jnp.asarray(x)
 
-        t0 = time.time()
+        t0 = time.perf_counter()
 
         if p is None:
             @jax.jit
@@ -519,7 +519,7 @@ class GNEP():
         xi, state = solver.run(x[i1:i2], bounds=(li, ui))
         x_new = np.asarray(x.at[i1:i2].set(xi))
         
-        t0 = time.time() - t0
+        t0 = time.perf_counter() - t0
 
         stats = SimpleNamespace()
         stats.elapsed_time = t0

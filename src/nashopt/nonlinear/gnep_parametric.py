@@ -143,7 +143,7 @@ class ParametricGNEP(GNEP):
                 Optimal value of the design objective J at (x*(p*), p*).
             stats : Statistics about the optimization result.
         """
-        t0 = time.time()
+        t0 = time.perf_counter()
 
         is_J = J is not None
         if not is_J:
@@ -300,7 +300,7 @@ class ParametricGNEP(GNEP):
                 R = np.asarray(self.kkt_residual(z))
                 stats.kkt_evals += solution.nfev
 
-        t0 = time.time() - t0
+        t0 = time.perf_counter() - t0
         J_opt = J(x, p) if is_J else 0.0
         lam = []
         if self.has_constraints:

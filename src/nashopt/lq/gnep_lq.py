@@ -11,6 +11,8 @@ from functools import partial
 import daqp
 from .._common.optional_deps import get_gurobi, get_highspy
 from .prox_admm_gne import solve as solve_prox_admm
+from .lq_gnep_lemke import solve as solve_lemke
+from .log_ipm_gnep import solve as solve_log_ipm
 from .._common.report import check_equilibrium_common
     
 class GNEP_LQ():
@@ -24,8 +26,8 @@ class GNEP_LQ():
 
                     min_{x_i} 0.5 x^T Qi x + (c_i+ F_i p)^T x
                     s.t.      A x <= b + S p
-                                Aeq x = beq + Seq p
-                                lb <= x <= ub
+                              Aeq x = beq + Seq p
+                              lb <= x <= ub
 
         where f is either the sum of convex piecewise affine (PWA) functions
 
@@ -40,7 +42,13 @@ class GNEP_LQ():
 
         Special cases of the general problem are:
         1) If p is empty and f(x,p)=0, we simply look for a generalized Nash equilibrium of the linear
-        quadratic game;
+        quadratic game:
+        
+                    x_i* \in  argmin_{x_i} 0.5 x^T Qi x + (c_i+ F_i p)^T x
+                    s.t.      A x <= b + S p
+                              Aeq x = beq + Seq p
+                              lb <= x <= ub
+                                
         2) If p is not empty and f(x,p)=||x-xdes||_inf or f(x,p)=||x-xdes||_1, we solve the game design problem of finding the parameter vector p such that the resulting general Nash equilibrium x* is as close as possible to the desired equilibrium point xdes.
 
         If max_solutions > 1, multiple solutions are searched for (if they exist, up to max_solutions), each corresponding to a different combination of active constraints at the equilibrium.
@@ -97,6 +105,8 @@ class GNEP_LQ():
             - "highs" (default) mixed-integer programming solver
             - "gurobi" mixed-integer programming solver
             - "prox_admm" proximal ADMM algorithm (Borgens and Kanzow, 2021), only for variational non-parametric GNEPs
+            - "lemke" Lemke's method for LCPs, only for variational non-parametric GNEPs
+            - "log_ipm" logarithmic barrier interior point method, only for variational non-parametric GNEPs
 
         (C) 2025-2026 Alberto Bemporad
         """
@@ -109,7 +119,6 @@ class GNEP_LQ():
             raise ValueError("Length of c must be equal to number of agents")
         if F is not None and not len(F) == N:
             raise ValueError("Length of F must be equal to number of agents")
-
 
         # Make local copies of input data to avoid modifying user data
         Q = [Qi.copy() for Qi in Q]
@@ -252,9 +261,9 @@ class GNEP_LQ():
             npar = 0
 
         solver = solver.lower()
-
-        if solver not in ["highs", "gurobi", "prox_admm"]:
-            raise ValueError("solver must be 'highs' or 'gurobi' or 'prox_admm'")
+        solvers = ["highs", "gurobi", "prox_admm", "lemke", "log_ipm"]
+        if solver not in solvers:
+            raise ValueError(f"solver must be one of {', '.join(solvers)}")
         
         if solver == 'gurobi':
             gp = get_gurobi()
@@ -264,15 +273,15 @@ class GNEP_LQ():
                 solver = "highs"
             is_mip = True
         
-        if solver == "prox_admm":
+        if solver in ["prox_admm", "lemke", "log_ipm"]:
             if not variational:
-                raise ValueError("Proximal ADMM algorithm can only solve variational GNEPs")
+                raise ValueError(f"Solution method '{solver}' can only solve variational GNEPs")
             if has_params:
-                raise ValueError("Proximal ADMM algorithm only solves non-parametric GNEPs")
+                raise ValueError(f"Solution method '{solver}' can only solve non-parametric GNEPs")
             if has_pwa_objective or has_quad_objective:
-                raise ValueError("Proximal ADMM algorithm only solves GNEPs without game-design objective function")
+                raise ValueError(f"Solution method '{solver}' can only solve GNEPs without game-design objective function")
             if len(dim)<2:
-                raise ValueError("Proximal ADMM algorithm only solves GNEPs with at least 2 agents")
+                raise ValueError(f"Solution method '{solver}' can only solve GNEPs with at least 2 agents")
             is_mip = False
 
         if solver == "highs":
@@ -820,7 +829,7 @@ class GNEP_LQ():
                 
             m.setObjective(J_PWA + J_Q, gp.GRB.MINIMIZE)
             
-        elif solver == "prox_admm":
+        elif solver in ["prox_admm", "lemke", "log_ipm"]:
             mip = SimpleNamespace() # store problem data in the object for use in the ADMM algorithm. It's called mip for consistency with the other solvers, even if no MILP model is created.  
             mip.Q = Q
             mip.c = c
@@ -828,6 +837,10 @@ class GNEP_LQ():
             mip.b = b
             mip.Aeq = Aeq
             mip.beq = beq
+            
+            if solver == "lemke" and np.isinf(lb).any():
+                print("\033[1;31mWarning\033[0m: Lemke's algorithm requires finite lower bounds on variables. Setting any -inf bounds to -1.e4.")
+                lb[np.isinf(lb)] = -1.e4
                             
         self.mip = mip
         self.dim = dim
@@ -901,7 +914,7 @@ class GNEP_LQ():
         
         MILP is used when no quadratic objective function is specified, otherwise MIQP is used (only Gurobi supported). 
         
-        Alternatively, if the solver specified is "prox_admm", a proximal ADMM algorithm is used to solve the variational GNEP without parameters (or with a fixed parameter) and without PWA or quadratic objective function. 
+        Alternatively, if the solver specified is "prox_admm" or "lemke" or "log_ipm", the corresponding algorithm is used to solve the variational GNEP without parameters (or with a fixed parameter) and without PWA or quadratic objective function. 
 
         Parameters
         ----------
@@ -912,24 +925,28 @@ class GNEP_LQ():
         solver_options : dict
             Dictionary of solver-specific options to set before solving (not required by MIP solvers).
             
-            For 'prox_admm' solver, the following options are supported (see prox_admm_gne.py for details):
-                maxiter : int
-                    Maximum number of ADMM iterations
-                rho : float
-                    Augmented Lagrangian parameter
-                tol : float
-                    Stopping tolerance
-                gamma : float
-                    Proximal operator parameter
-                x0 : array_like
-                    Initial guess for the ADMM iterations
-
             For 'highs' and 'gurobi' solvers, the following options are supported:
-                time_limit : float
-                    Time limit in seconds
-                mip_gap : float
-                    Relative MIP gap tolerance
-                    
+                time_limit : Time limit in seconds
+                mip_gap : Relative MIP gap tolerance
+
+            For 'prox_admm' solver, the following options are supported (see prox_admm_gne.py for details):
+                maxiter : Maximum number of ADMM iterations
+                rho : augmented Lagrangian parameter
+                tol : stopping tolerance
+                gamma : proximal operator parameter
+                x0 : Initial guess for the ADMM iterations
+
+            For 'log_ipm' solver, the following options are supported (see log_ipm_gnep.py for details):
+                eps : barrier-parameter convergence threshold  (mu <= eps)
+                tau : Newton-step norm threshold for inner termination
+                eta1 : max Newton steps per outer iteration (centering)
+                eta2 : max Newton steps in the final refinement pass
+                gamma : diagonal regularisation for the Newton system
+                beta  : step-size damping  (alpha = 1/max(1, (1/(2*beta))||Delta_v||^2_inf))
+                max_outer: hard cap on outer iterations
+            
+            For 'lemke' solver, no extra option is needed.
+            
         Returns
         -------
         sol : SimpleNamespace (or list of SimpleNamespace, if multiple solutions are searched for)
@@ -1018,7 +1035,7 @@ class GNEP_LQ():
             found = 0
             while go and (found < max_solutions):
 
-                t0 = time.time()
+                t0 = time.perf_counter()
                 
                 if self.solver == 'highs':
                     status = self.mip.run()
@@ -1034,7 +1051,7 @@ class GNEP_LQ():
                     go = (self.mip.model.status == gp.GRB.OPTIMAL)
                     status_str = 'optimal solution found' if go else 'not solved'
                     
-                t0 = time.time() - t0
+                t0 = time.perf_counter() - t0
 
                 if go:
                     found += 1
@@ -1156,12 +1173,26 @@ class GNEP_LQ():
                 else:
                     gamma = solver_options["gamma"]
             
-            sol = solve_prox_admm(self.dim, self.mip.Q, self.mip.c, self.A, self.mip.b, C=self.mip.Aeq, d=self.mip.beq, lb=self.lb, ub=self.ub, x0=x0, rho=rho, gamma=gamma, maxiter=maxiter, tol=tol, verbose=verbose)
+                sol = solve_prox_admm(self.dim, self.mip.Q, self.mip.c, self.A, self.mip.b, C=self.mip.Aeq, d=self.mip.beq, lb=self.lb, ub=self.ub, x0=x0, rho=rho, gamma=gamma, maxiter=maxiter, tol=tol, verbose=verbose)
+                
+            elif self.solver == 'lemke':
+                Qi, p, S = self.transform_cost(self.mip.Q, self.mip.c)
+                # The method assumes A x + b >= 0 and lb>=-inf
+                
+                sol = solve_lemke(Qi, S, p, -self.A, self.mip.b, self.lb, self.ub)  
+            
+            elif self.solver == 'log_ipm':
+                Qi, p, S = self.transform_cost(self.mip.Q, self.mip.c)
+                # The method assumes A x + b >= 0
+                sol = solve_log_ipm(self.N, self.dim, Qi, S, p, -self.A, self.mip.b, self.mip.Aeq, self.mip.beq, self.lb, self.ub, **solver_options)
+            
+            sol.f = [0.5 * sol.x.T @ self.mip.Q[i] @ sol.x + self.mip.c[i].T @ sol.x for i in range(N)]
             sol.p = self.single_p            
             sol.eps = None
             sol.delta = None
 
             solutions = [sol]
+            
 
         if len(solutions) == 1:
             return solutions[0]
@@ -1171,6 +1202,42 @@ class GNEP_LQ():
             return None
         else:
             return solutions
+        
+    def cost_eval(self, i, x, p=None):
+        """Evaluate the cost function of agent i at strategy profile x and parameter p (if any).
+
+        Parameters
+        ----------
+        i : int
+            Index of the agent whose cost is evaluated.
+        x : array_like
+            Strategy profile of all agents (including agent i).
+        p : array_like, optional
+            Current value of the parameter vector (if any).
+
+        Returns:
+        -----------
+        f : float
+            Cost function value for agent i at strategy profile x and parameter p, fi(x,p).
+        """
+        
+        xmi = x[self.not_i[i]]  # strategies of other agents
+        i1 = self.i1[i]
+        i2 = self.i2[i]
+        
+        if self.has_params and p is None:
+            raise ValueError("Parameter vector p must be provided to evaluate cost when parameters are present in the problem.")
+        if self.is_single_p and p is not None and not np.allclose(p, self.single_p):
+            # At construction, the single fixed parameter vector was used to redefine the problem as a standard GNEP without parameters.
+            raise ValueError("Parameter vector p cannot be different from the fixed p used at object construction")
+                    
+        Qi = np.array(self.Q[i][i1:i2,i1:i2])
+        ci = self.c[i][i1:i2]+(self.Q[i][i1:i2, :][:, self.not_i[i]]@xmi).reshape(-1)
+        if self.has_params and self.F is not None:
+            ci += (self.F[i][i1:i2, :]@p).reshape(-1)
+
+        f = 0.5 * x[i1:i2].T @ Qi @ x[i1:i2] + ci.T @ x[i1:i2]        
+        return f
 
     def best_response(self, i, x, p=None,  active_ineq=None, active_lb=None, active_ub=None):
         """Compute the best response of agent i to the strategies x(-i) of the other agents and parameter p (if any) by solving a single-agent QP problem.
@@ -1340,3 +1407,62 @@ class GNEP_LQ():
             else:
                 self.f.append(partial(lambda x, Qi, ci: 0.5 * x.T @ Qi @ x + ci.T @ x, Qi=self.Q[i], ci=self.c[i]))
         return check_equilibrium_common(self, x, p, verbose, **kwargs)
+
+    def is_monotone(self, verbose=True, return_min_eig=False):
+        """Check if the game is monotone by computing the minimum eigenvalue of the symmetric part of the pseudogradient matrix (i.e., the Jacobian of the pseudogradient mapping).
+        
+        Parameters:
+        -----------
+        verbose : bool, optional
+            If True, print whether the game is monotone and the minimum eigenvalue of the symmetric part of the pseudogradient matrix.
+        return_min_eig : bool, optional
+            If True, also return the minimum eigenvalue of the symmetric part of the pseudogradient matrix, in addition to whether the game is monotone.
+            
+        Returns:
+        --------
+        monotone : bool
+            True if the game is monotone, False otherwise.
+        min_eig : float
+            Minimum eigenvalue of the symmetric part of the pseudogradient matrix (only returned if return_min_eig is True).
+        
+        """
+        M = np.zeros((self.nvar, self.nvar))
+        for i in range(self.N):
+            i1 = self.i1[i]
+            i2 = self.i2[i]
+            M[i1:i2, :] = self.Q[i][i1:i2, :]
+        M = 0.5*(M + M.T) # symmetrize pseudo-gradient matrix
+        eigvals = np.linalg.eigvalsh(M)
+        min_eig = np.min(eigvals)
+        if verbose:
+            if min_eig < -1.0e-12:
+                print("\033[1;31mWarning\033[0m: pseudo-gradient matrix is not positive semidefinite, game is not monotone.")
+            elif min_eig > 1.0e-12:
+                print("The pseudo-gradient matrix is positive definite, game is strongly monotone.")
+            else:
+                print("The pseudo-gradient matrix is positive semidefinite, game is monotone.")
+            print(f"Minimum eigenvalue of pseudo-gradient matrix: {min_eig:.4e}")        
+        is_monotone_flag = min_eig >= -1.0e-12
+        if return_min_eig:
+            return is_monotone_flag, min_eig
+        return is_monotone_flag
+
+    def transform_cost(self, Q, c):
+        """Transforms the cost function of a linear-quadratic game into the form required by Lemke's and log-IP solvers, given the original cost matrices Q and c and the index sets ii of the decision variables of each player. The new form consists of the Hessian matrices Qi of each player's cost function, the linear cost vectors pi of each player, and the coupling matrices S that capture the off-diagonal quadratic terms between players. 
+        """
+        ii = [list(range(self.i1[i], self.i2[i])) for i in range(self.N)]
+        Qi = list()
+        p=list()
+        S=list()
+        N = len(ii)
+        for i in range(N):
+            Qi.append(Q[i][ii[i],:][:,ii[i]])
+            p.append(c[i][ii[i]])
+            Si = list()
+            for j in range(N):
+                if j != i:
+                    Si.append(Q[i][ii[i],:][:,ii[j]])
+                else:
+                    Si.append(None)
+            S.append(Si)
+        return Qi, p, S

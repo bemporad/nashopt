@@ -3,7 +3,6 @@ import jax
 from nashopt import GNEP_LQ, GNEP
 from functools import partial
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
 
 np.random.seed(2)
 np.set_printoptions(precision=4, suppress=True)

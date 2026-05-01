@@ -31,8 +31,8 @@ Tc = 3  # constraints horizon
 umin, umax, dumin, dumax, ymin, ymax = None, None, None, None, None, None
 umin = 0.*np.ones(nu)
 umax = 4.*np.ones(nu)
-# dumin = -.2*np.ones(nu)
-# dumax = .2*np.ones(nu)
+#dumin = -2.*np.ones(nu)
+#dumax = 2.*np.ones(nu)
 # ymin = -2.*np.ones(ny)
 # ymax = np.array([1., np.inf, np.inf])
 
@@ -68,24 +68,40 @@ if add_xu_constraint:
 else:
     Acx, Acu, Acdu, bc = None, None, None, None
 
-nash_mpc = NashLinearMPC(sizes, A, B, C, Qy, Qdu, T, ymin=ymin, ymax=ymax,
-                         umin=umin, umax=umax, dumin=dumin, dumax=dumax, Qeps=Qeps, Tc=Tc,
-                         Acx=Acx, Acu=Acu, Acdu=Acdu, bc=bc)
-
 Tsim = 40  # number of closed-loop simulation steps
 x0 = np.zeros(nx)
-u1 = np.zeros(nu)
 ref = np.array([1., 2., 3.])
 
-for case in range(2):
+for case in range(3):
     if case == 0:
         variational = False
         centralized = False
+        solver = 'highs' # or use 'gurobi' if you have a license, which is faster
         print("Nash-MPC")
+
+        nash_mpc = NashLinearMPC(sizes, A, B, C, Qy, Qdu, T, ymin=ymin, ymax=ymax,
+                                umin=umin, umax=umax, dumin=dumin, dumax=dumax, Qeps=Qeps, Tc=Tc,
+                                Acx=Acx, Acu=Acu, Acdu=Acdu, bc=bc)
     elif case == 1:
+        variational = True
+        centralized = False
+        solver = 'lemke' # 'prox_admm' 
+        print("Nash-MPC - Variational")
+        
+        # Lemke's algorithm requires finite lower bounds on variables, so we set (large) lower-bounds on input increments
+        dumin = -1000.*np.ones(nu)
+        nash_mpc = NashLinearMPC(sizes, A, B, C, Qy, Qdu, T, ymin=ymin, ymax=ymax,
+                         umin=umin, umax=umax, dumin=dumin, dumax=dumax, Qeps=Qeps, Tc=Tc,
+                         Acx=Acx, Acu=Acu, Acdu=Acdu, bc=bc)
+    elif case == 2:
         variational = False
         centralized = True
+        solver = 'osqp'
         print("Centralized MPC")
+
+        nash_mpc = NashLinearMPC(sizes, A, B, C, Qy, Qdu, T, ymin=ymin, ymax=ymax,
+                                umin=umin, umax=umax, dumin=dumin, dumax=dumax, Qeps=Qeps, Tc=Tc,
+                                Acx=Acx, Acu=Acu, Acdu=Acdu, bc=bc)
     cpu_build_time = []
     X = []
     Y = []
@@ -93,12 +109,14 @@ for case in range(2):
     T_tot = []
     T_solver = []
     x = x0.copy()
+    u1 = np.zeros(nu)
+    
     for k in range(Tsim):
         X.append(x)
         Y.append(C@x)
         sol = nash_mpc.solve(
-            x, u1, ref, variational=variational, centralized=centralized, solver='highs', bc=bc)
-            # use 'gurobi' if you have a license, which is faster
+            x, u1, ref, variational=variational, centralized=centralized, solver=solver, bc=bc)
+            
         uk = sol.u
         u1 = uk
         U.append(uk)
@@ -107,7 +125,7 @@ for case in range(2):
         T_solver.append(sol.elapsed_time_solver)
 
     print(
-        f"Total time per step ({'nash' if not centralized else 'centralized'}): {np.min(T_tot)*1.e3:.2f} <= t <= {np.max(T_tot)*1.e3:.2f} ms")
+        f"Total time per step ({'game-theoretic' if not centralized else 'centralized'} - method = {solver}): {np.min(T_tot)*1.e3:.2f} <= t <= {np.max(T_tot)*1.e3:.2f} ms")
     # print(f"Solver time per step: {np.min(T_solver)*1.e3:.2f} <= t <= {np.max(T_solver)*1.e3:.2f} ms")
     X = np.array(X)
     Y = np.array(Y)
@@ -129,8 +147,10 @@ for case in range(2):
                    color=colors[i], label=f'$u_{i+1}$')
     ax[1].legend(loc='lower right')
     ax[1].grid()
-    ax[0].set_title(
-        f"{'game-theoretic MPC' if not centralized else 'centralized MPC'}")
+    the_title = f"{'game-theoretic MPC' if not centralized else 'centralized MPC'}"
+    if not centralized:
+        the_title += f" {'(variational-GNEs)' if variational else '(non-variational GNEs)'}"
+    ax[0].set_title(the_title)
     ax[1].set_xlabel('time step $t$')
     plt.show()
     #plt.savefig(

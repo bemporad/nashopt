@@ -382,6 +382,7 @@ class NashLinearMPC():
         # remove constraints beyond constraint horizon Tc
         off = 0
         Tc = self.Tc
+        self.lb_original = lb.copy() # save original bounds for use with Lemke's method, which requires lower-bounded variables
         for i in range(N):
             si = sizes[i]
             # constraint eps_i>=0 is not removed
@@ -406,9 +407,9 @@ class NashLinearMPC():
         variational : bool, optional
             If True, compute a variational equilibrium by adding the necessary equality constraints on the multipliers of the shared output constraints. 
         centralized : bool, optional
-            If True, solve a centralized MPC problem via QP instead of the game-theoretic one via MILP.
+            If True, solve a centralized MPC problem via QP using osQP instead of the game-theoretic one.
         solver : str, optional
-            LQ-GNEP solver to use: 'highs', 'gurobi' (MILP) or 'prox_admm' (only when 'variational=True').
+            LQ-GNEP solver to use: 'highs', 'gurobi' (MILP) or 'prox_admm', 'lemke', 'log_ipm' (only when 'variational=True').
         bc : ndarray, optional
             RHS for additional shared polyhedral constraints possibly imposed at current time step. If None, the value provided during initialization is used, or no such constraints were specified at construction.
             
@@ -444,10 +445,11 @@ class NashLinearMPC():
         b += self.B_con @ np.hstack((x0, u1))
         c = [self.c[i] + self.F[i] @ np.hstack((x0, u1, ref)) for i in range(self.N)]
 
-        t0 = time.time()
+        t0 = time.perf_counter()
         if not centralized:
-            # Set up and solve GNEP via MILP
-            gnep = GNEP_LQ(sizes, self.H, c, F=None, lb=self.lb, ub=self.ub, pmin=None, pmax=None,
+            # Set up and solve GNEP 
+            lb = self.lb_original if variational and solver == 'lemke' else self.lb
+            gnep = GNEP_LQ(sizes, self.H, c, F=None, lb=lb, ub=self.ub, pmin=None, pmax=None,
                            A=self.A_con, b=b, S=None, D_pwa=None, E_pwa=None, h_pwa=None, M=M, variational=variational, solver=solver)
         else:
             # Centralized MPC: total cost = sum of all agents' costs, solve via QP
@@ -462,7 +464,7 @@ class NashLinearMPC():
             prob = osqp.OSQP()
             prob.setup(P=H_cen, q=c_cen, A=A_cen, l=lb_cen,
                        u=ub_cen, verbose=False, polish=True, max_iter=10000, eps_abs=1.e-6, eps_rel=1.e-6, polish_refine_iter=3)
-        elapsed_time_build = time.time() - t0
+        elapsed_time_build = time.perf_counter() - t0
 
         if not centralized:
             gnep_sol = gnep.solve()

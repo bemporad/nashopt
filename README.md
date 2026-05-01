@@ -410,9 +410,13 @@ $$
 
 or the sum of both, where in this case the optimal parameters $p$ are determined by MIQP (only Gurobi supported).
 
-For the special case of variational GNEs and fixed parameter $p$, by treating the vector of slack variables for the shared and local inequality constraints appearing in the game as a further player, the problem can be also solved by the proximal ADMM method of [2] by passing the argument `solver='prox-admm'`.
+For the special case of variational GNEs and fixed parameter $p$, by treating the vector of slack variables for the shared and local inequality constraints appearing in the game as a further player, the problem can be also solved by the proximal ADMM method of [2] by passing the argument `solver='prox-admm'`, or by Lemke's method [3] with `solver='lemke'`, or by the log-domain interior point method [4] with `solver='log_ipm'`.
 
 [2] E. Börgens and C. Kanzow, "ADMM-type methods for generalized Nash equilibrium problems in Hilbert spaces," SIAM Journal on Optimization, vol. 31, n.1, pp. 377-403, 2021.
+
+[3] D.A. Schiro, J.-S. Pang, U.V. Shanbhag, "On the solution of affine generalized Nash equilibrium problems with shared constraints by Lemke’s method," Mathematical Programming, Ser. A, 142:1–46, 2013.
+
+[4] B. Liu, D. Liao-McPherson, "A Log-domain Interior Point Method for Convex Quadratic Games," American Control Conference, 2025.
 
 ## Game-Theoretic Control
 We consider non-cooperative multi-agent control problems where each agent only controls a subset of the input vector $u$ of a discrete-time linear dynamical system 
