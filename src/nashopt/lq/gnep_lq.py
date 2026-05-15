@@ -4,17 +4,22 @@
 #
 # (C) 2025-2026 Alberto Bemporad
 
+
 import numpy as np
 import time
 from types import SimpleNamespace
 from functools import partial
 import daqp
+from ctypes import c_double, c_int
 from .._common.optional_deps import get_gurobi, get_highspy
 from .prox_admm_gne import solve as solve_prox_admm
 from .lq_gnep_lemke import solve as solve_lemke
 from .log_ipm_gnep import solve as solve_log_ipm
+from .lemke_dual import solve as solve_lemke_dual
+from .goldnash import goldnash as solve_goldnash
 from .._common.report import check_equilibrium_common
-    
+from .._common.optional_deps import add_box_constraints
+
 class GNEP_LQ():
     def __init__(self, dim, Q, c, F=None, lb=None, ub=None, pmin=None, pmax=None, A=None, b=None, S=None, Aeq=None, beq=None, Seq=None, D_pwa=None, E_pwa=None, h_pwa=None, Q_J=None, c_J=None, M=1e4, variational=False, solver="highs"):
         """Given a (multiparametric) generalized Nash equilibrium problem with N agents,
@@ -55,7 +60,7 @@ class GNEP_LQ():
 
         To search for a variational GNE with no parameter, or parameter p=pmin=pmax, set the flag variational=True. In this case, the KKT conditions require equal Lagrange multipliers for all agents for each shared constraint.
 
-            Parameters
+        Parameters
         ----------
         dim : list of int
             List with number of variables for each agent.
@@ -105,8 +110,12 @@ class GNEP_LQ():
             - "highs" (default) mixed-integer programming solver
             - "gurobi" mixed-integer programming solver
             - "prox_admm" proximal ADMM algorithm (Borgens and Kanzow, 2021), only for variational non-parametric GNEPs
-            - "lemke" Lemke's method for LCPs, only for variational non-parametric GNEPs
+            - "goldnash" GoldNash algorithm (Bemporad, 2026), only for strongly-monotone variational non-parametric GNEPs
+            - "lemke" Lemke's method for LCPs, only for variational non-parametric GNEPs with lower-bounded variables and no equality constraints.
+            - "lemke_dual" Lemke's method applied on the dual reformulation of the KKT conditions of the game, only for variational non-parametric GNEPs. 
             - "log_ipm" logarithmic barrier interior point method, only for variational non-parametric GNEPs
+            - "dr_daqp" Douglas-Rachford operator splitting with an active-set acceleration strategy (Arnstrom, Benenati, Belgioioso, 2026). See https://darnstrom.github.io/daqp/start/advanced/avi.
+            Only for strongly-monotone variational non-parametric GNEPs
 
         (C) 2025-2026 Alberto Bemporad
         """
@@ -260,8 +269,11 @@ class GNEP_LQ():
             has_params = False  # no parameters anymore
             npar = 0
 
+        mip_solvers = ["highs", "gurobi"]
+        vgne_solvers = ["prox_admm", "goldnash", "lemke", "lemke_dual", "log_ipm", 'dr_daqp']
+        solvers = mip_solvers + vgne_solvers
+
         solver = solver.lower()
-        solvers = ["highs", "gurobi", "prox_admm", "lemke", "log_ipm"]
         if solver not in solvers:
             raise ValueError(f"solver must be one of {', '.join(solvers)}")
         
@@ -273,7 +285,7 @@ class GNEP_LQ():
                 solver = "highs"
             is_mip = True
         
-        if solver in ["prox_admm", "lemke", "log_ipm"]:
+        if solver in vgne_solvers:
             if not variational:
                 raise ValueError(f"Solution method '{solver}' can only solve variational GNEPs")
             if has_params:
@@ -829,7 +841,7 @@ class GNEP_LQ():
                 
             m.setObjective(J_PWA + J_Q, gp.GRB.MINIMIZE)
             
-        elif solver in ["prox_admm", "lemke", "log_ipm"]:
+        elif solver in vgne_solvers:
             mip = SimpleNamespace() # store problem data in the object for use in the ADMM algorithm. It's called mip for consistency with the other solvers, even if no MILP model is created.  
             mip.Q = Q
             mip.c = c
@@ -914,7 +926,7 @@ class GNEP_LQ():
         
         MILP is used when no quadratic objective function is specified, otherwise MIQP is used (only Gurobi supported). 
         
-        Alternatively, if the solver specified is "prox_admm" or "lemke" or "log_ipm", the corresponding algorithm is used to solve the variational GNEP without parameters (or with a fixed parameter) and without PWA or quadratic objective function. 
+        Alternatively, if the solver specified is "goldnash", "prox_admm", "lemke", "lemke_dual", "log_ipm", or "dr_daqp", the corresponding algorithm is used to solve the variational GNEP without parameters (or with a fixed parameter) and without PWA or quadratic objective function. 
 
         Parameters
         ----------
@@ -936,6 +948,14 @@ class GNEP_LQ():
                 gamma : proximal operator parameter
                 x0 : Initial guess for the ADMM iterations
 
+            For 'goldnash' solver, the following options are supported (see goldnash_gnep.py for details):
+                max_iter : int, maximum number of iterations
+                tol : float, stopping tolerance
+                verbose: bool, verbosity level
+                check_monotone: bool, if True check if game is strongly monotone,
+                refresh_freq: int, frequency to refresh incremental factorizationto limit numerical drift
+                use_numba: bool, if True use Numba-JIT kernels for incremental factorization updates
+                
             For 'log_ipm' solver, the following options are supported (see log_ipm_gnep.py for details):
                 eps : barrier-parameter convergence threshold  (mu <= eps)
                 tau : Newton-step norm threshold for inner termination
@@ -945,7 +965,15 @@ class GNEP_LQ():
                 beta  : step-size damping  (alpha = 1/max(1, (1/(2*beta))||Delta_v||^2_inf))
                 max_outer: hard cap on outer iterations
             
-            For 'lemke' solver, no extra option is needed.
+            For 'lemke' solver:
+                max_iter : maximum number of iterations
+                tol : tolerance for convergence of Lemke's algorithm
+            
+            For 'lemke_dual' solver:
+                max_iter : maximum number of iterations 
+                tol : tolerance for convergence of Lemke's algorithm applied to the dual LCP.
+            
+            For 'dr_daqp' solver, see https://darnstrom.github.io/daqp/parameters/.
             
         Returns
         -------
@@ -1151,6 +1179,7 @@ class GNEP_LQ():
                 solver_options = {}
             
             if self.solver == 'prox_admm':
+                t_admm = time.perf_counter()
                 # Check if solver_options has the required options for the ADMM algorithm, and set defaults if not provided.
                 if "x0" not in solver_options:
                     x0 = None
@@ -1174,17 +1203,102 @@ class GNEP_LQ():
                     gamma = solver_options["gamma"]
             
                 sol = solve_prox_admm(self.dim, self.mip.Q, self.mip.c, self.A, self.mip.b, C=self.mip.Aeq, d=self.mip.beq, lb=self.lb, ub=self.ub, x0=x0, rho=rho, gamma=gamma, maxiter=maxiter, tol=tol, verbose=verbose)
+                t_admm = time.perf_counter() - t_admm
+                sol.elapsed_time = t_admm
                 
             elif self.solver == 'lemke':
+                t_lemke = time.perf_counter()
                 Qi, p, S = self.transform_cost(self.mip.Q, self.mip.c)
-                # The method assumes A x + b >= 0 and lb>=-inf
-                
-                sol = solve_lemke(Qi, S, p, -self.A, self.mip.b, self.lb, self.ub)  
+                # The method assumes A x + b >= 0 and lb>=-inf                
+                sol = solve_lemke(Qi, S, p, -self.A, self.mip.b, self.lb, self.ub, **solver_options)  
+                t_lemke = time.perf_counter() - t_lemke
+                sol.elapsed_time = t_lemke
             
+            elif self.solver == 'lemke_dual':
+                t_lemke_dual = time.perf_counter()
+                sol = solve_lemke_dual(self.mip.Q, self.mip.c, self.dim, self.A, self.mip.b, self.lb, self.ub, self.mip.Aeq, self.mip.beq, **solver_options)  
+                t_lemke_dual = time.perf_counter() - t_lemke_dual
+                sol.elapsed_time = t_lemke_dual
+
+            elif self.solver == 'goldnash':
+                t_goldnash = time.perf_counter()
+                AA, bb = add_box_constraints(self.nvar, self.A, self.mip.b, self.lb, self.ub)
+                
+                x_goldnash, info_goldnash = solve_goldnash(self.mip.Q, self.mip.c, self.dim, A=AA, b=bb, E=self.mip.Aeq, f=self.mip.beq, **solver_options)
+                t_goldnash = time.perf_counter() - t_goldnash
+
+                sol = SimpleNamespace(
+                    x=x_goldnash, 
+                    lam=info_goldnash["lam"], 
+                    mu=info_goldnash["nu"],
+                    status_str=info_goldnash["status"],
+                    G=self.G, 
+                    Geq=self.Geq, 
+                    elapsed_time=t_goldnash,
+                    num_iters=info_goldnash["total_steps"], # number of inner-loop iterations
+                    info=info_goldnash)
+                info_goldnash.pop("nu", None)  # remove equality duals from info, they are stored in sol.mu
+                info_goldnash.pop("lam", None) # remove inequality duals from info, they are stored in sol.lam
+                info_goldnash.pop("status", None) # remove status from info, it's stored in sol.status_str
+                info_goldnash.pop("total_steps", None) # remove total_steps from info, it's stored in sol.num_iters
+                
             elif self.solver == 'log_ipm':
+                t_log_ipm = time.perf_counter()
                 Qi, p, S = self.transform_cost(self.mip.Q, self.mip.c)
                 # The method assumes A x + b >= 0
                 sol = solve_log_ipm(self.N, self.dim, Qi, S, p, -self.A, self.mip.b, self.mip.Aeq, self.mip.beq, self.lb, self.ub, **solver_options)
+                t_log_ipm = time.perf_counter() - t_log_ipm
+                sol.elapsed_time = t_log_ipm
+            
+            elif self.solver == 'dr_daqp':
+                t_daqp = time.perf_counter()
+                G = np.asarray(self.pseudogradient_matrix(), dtype=c_double)
+                r = np.zeros(self.nvar, dtype=c_double)
+                for i in range(N):
+                    r[self.i1[i]:self.i2[i]] = self.mip.c[i][self.i1[i]:self.i2[i]]
+                    
+                AA, bb = add_box_constraints(self.nvar, self.A, self.mip.b, self.lb, self.ub)
+                ncon = AA.shape[0]
+                
+                if ncon>0 and self.has_eq_constraints:
+                    AA_daqp = np.vstack((AA, self.Aeq)).astype(c_double)
+                    bupper_daqp = np.concatenate((bb, self.mip.beq), dtype=c_double)
+                    blower_daqp = np.concatenate((-np.full(ncon, np.inf, dtype=c_double), self.mip.beq), dtype=c_double)
+                    sense_daqp = np.concatenate((np.zeros(ncon, dtype=c_int), 5*np.ones(self.nconeq, dtype=c_int)))  # 1 for inequalities, 1+4 for equalities
+                elif ncon>0 and not self.has_eq_constraints:
+                    AA_daqp = np.asarray(AA, dtype=c_double)
+                    bupper_daqp = np.asarray(bb, dtype=c_double)
+                    blower_daqp = -np.full(ncon, np.inf, dtype=c_double)
+                    sense_daqp = np.zeros(ncon, dtype=c_int)  # 0 for inequalities
+                elif ncon==0 and self.has_eq_constraints:
+                    AA_daqp = np.asarray(self.mip.Aeq, dtype=c_double)
+                    bupper_daqp = np.asarray(self.mip.beq, dtype=c_double)
+                    blower_daqp = np.asarray(self.mip.beq, dtype=c_double)
+                    sense_daqp = 5*np.ones(self.nconeq, dtype=c_int)  # 1+4 for equalities
+                else:                    
+                    AA_daqp = np.zeros((0, self.nvar), dtype=c_double)
+                    bupper_daqp = np.zeros(0, dtype=c_double)
+                    blower_daqp = np.zeros(0, dtype=c_double)
+                    sense_daqp = np.zeros(0, dtype=c_int)
+                
+                x_daqp, _, exitflag, info = daqp.solve(G, r, AA_daqp, bupper_daqp, blower_daqp, sense=sense_daqp, is_avi=True, **solver_options)
+                t_daqp = time.perf_counter() - t_daqp
+                
+                lam = info["lam"]
+                num_iters = info["iterations"]                 
+                info.pop("lam", None)      
+                info.pop("iterations", None)          
+                
+                sol = SimpleNamespace(
+                    x=x_daqp, 
+                    lam=lam, 
+                    mu=None, 
+                    status_str=str(exitflag), 
+                    G=self.G, 
+                    Geq=self.Geq, 
+                    elapsed_time=t_daqp,
+                    num_iters=num_iters,
+                    info=info)
             
             sol.f = [0.5 * sol.x.T @ self.mip.Q[i] @ sol.x + self.mip.c[i].T @ sol.x for i in range(N)]
             sol.p = self.single_p            
@@ -1408,6 +1522,22 @@ class GNEP_LQ():
                 self.f.append(partial(lambda x, Qi, ci: 0.5 * x.T @ Qi @ x + ci.T @ x, Qi=self.Q[i], ci=self.c[i]))
         return check_equilibrium_common(self, x, p, verbose, **kwargs)
 
+    def pseudogradient_matrix(self):
+        """Get pseudogradient matrix of the game.
+
+        Returns:
+        -----------
+        M : ndarray
+            Pseudogradient matrix of the game.
+        """
+
+        M = np.zeros((self.nvar, self.nvar))
+        for i in range(self.N):
+            i1 = self.i1[i]
+            i2 = self.i2[i]
+            M[i1:i2, :] = self.Q[i][i1:i2, :]                
+        return M
+    
     def is_monotone(self, verbose=True, return_min_eig=False):
         """Check if the game is monotone by computing the minimum eigenvalue of the symmetric part of the pseudogradient matrix (i.e., the Jacobian of the pseudogradient mapping).
         
@@ -1426,22 +1556,18 @@ class GNEP_LQ():
             Minimum eigenvalue of the symmetric part of the pseudogradient matrix (only returned if return_min_eig is True).
         
         """
-        M = np.zeros((self.nvar, self.nvar))
-        for i in range(self.N):
-            i1 = self.i1[i]
-            i2 = self.i2[i]
-            M[i1:i2, :] = self.Q[i][i1:i2, :]
+        M = self.pseudogradient_matrix()
         M = 0.5*(M + M.T) # symmetrize pseudo-gradient matrix
         eigvals = np.linalg.eigvalsh(M)
         min_eig = np.min(eigvals)
         if verbose:
             if min_eig < -1.0e-12:
-                print("\033[1;31mWarning\033[0m: pseudo-gradient matrix is not positive semidefinite, game is not monotone.")
+                print("\n\033[1;31mWarning\033[0m: pseudo-gradient matrix is not positive semidefinite, game is not monotone.")
             elif min_eig > 1.0e-12:
                 print("The pseudo-gradient matrix is positive definite, game is strongly monotone.")
             else:
                 print("The pseudo-gradient matrix is positive semidefinite, game is monotone.")
-            print(f"Minimum eigenvalue of pseudo-gradient matrix: {min_eig:.4e}")        
+            print(f"Minimum eigenvalue of pseudo-gradient matrix = {min_eig:.4e}\n")        
         is_monotone_flag = min_eig >= -1.0e-12
         if return_min_eig:
             return is_monotone_flag, min_eig
@@ -1466,3 +1592,4 @@ class GNEP_LQ():
                     Si.append(None)
             S.append(Si)
         return Qi, p, S
+    

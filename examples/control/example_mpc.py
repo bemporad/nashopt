@@ -38,20 +38,26 @@ umax = 4.*np.ones(nu)
 
 # Random stable dynamics
 A = np.random.rand(nx, nx)  # random A, possibly unstable
-# scale to have spectral radius = .99
+# scale to have spectral radius = .95
 A = A / max(abs(np.linalg.eigvals(A)))*0.95
 B = np.random.randn(nx, nu)
 C = np.random.randn(ny, nx)
-if ny == ny:
+if nu == ny:
     DC = C@np.linalg.inv(np.eye(nx)-A)@B
     C = np.linalg.inv(DC)@C  # scale C to have DC gain = I
+
+strongly_monotone = True # Choose output weights so that the resulting LQ-GNEP is strongly monotone.
 
 Qy = []
 Qdu = []
 Qeps = 1.e3
+Qeps2 = 1.e-3
 for i in range(N):
     Qyi = np.zeros((ny, ny))
-    Qyi[i, i] = 1.
+    if strongly_monotone:
+        Qyi[i, i] = .1 # this makes the GNEP strongly monotone
+    else:
+        Qyi[i, i] = 1. # resulting GNEP is not strongly monotone
     Qy.append(Qyi)
     Qdui = .5
     Qdu.append(Qdui)
@@ -80,19 +86,25 @@ for case in range(3):
         print("Nash-MPC")
 
         nash_mpc = NashLinearMPC(sizes, A, B, C, Qy, Qdu, T, ymin=ymin, ymax=ymax,
-                                umin=umin, umax=umax, dumin=dumin, dumax=dumax, Qeps=Qeps, Tc=Tc,
+                                umin=umin, umax=umax, dumin=dumin, dumax=dumax, Qeps=Qeps, Qeps2=Qeps2, Tc=Tc,
                                 Acx=Acx, Acu=Acu, Acdu=Acdu, bc=bc)
     elif case == 1:
         variational = True
         centralized = False
-        solver = 'lemke' # 'prox_admm' 
+        solver = 'lemke'
+        #solver = 'goldnash'  # requires strong monotonicity 
+        #solver = 'dr_daqp' # requires strong monotonicity 
+        #solver = 'prox_admm'
+        #solver = 'lemke_dual'
+        #solver = 'log_ipm'
         print("Nash-MPC - Variational")
         
         # Lemke's algorithm requires finite lower bounds on variables, so we set (large) lower-bounds on input increments
-        dumin = -1000.*np.ones(nu)
+        if solver == 'lemke':
+            dumin = -1000.*np.ones(nu)
         nash_mpc = NashLinearMPC(sizes, A, B, C, Qy, Qdu, T, ymin=ymin, ymax=ymax,
-                         umin=umin, umax=umax, dumin=dumin, dumax=dumax, Qeps=Qeps, Tc=Tc,
-                         Acx=Acx, Acu=Acu, Acdu=Acdu, bc=bc)
+                         umin=umin, umax=umax, dumin=dumin, dumax=dumax, Qeps=Qeps, Qeps2=Qeps2, Tc=Tc,
+                         Acx=Acx, Acu=Acu, Acdu=Acdu, bc=bc, check_monotone=True)
     elif case == 2:
         variational = False
         centralized = True
@@ -100,7 +112,7 @@ for case in range(3):
         print("Centralized MPC")
 
         nash_mpc = NashLinearMPC(sizes, A, B, C, Qy, Qdu, T, ymin=ymin, ymax=ymax,
-                                umin=umin, umax=umax, dumin=dumin, dumax=dumax, Qeps=Qeps, Tc=Tc,
+                                umin=umin, umax=umax, dumin=dumin, dumax=dumax, Qeps=Qeps, Qeps2=Qeps2, Tc=Tc,
                                 Acx=Acx, Acu=Acu, Acdu=Acdu, bc=bc)
     cpu_build_time = []
     X = []
@@ -115,7 +127,9 @@ for case in range(3):
         X.append(x)
         Y.append(C@x)
         sol = nash_mpc.solve(
-            x, u1, ref, variational=variational, centralized=centralized, solver=solver, bc=bc)
+            x, u1, ref, variational=variational, centralized=centralized, solver=solver, bc=bc,
+            solver_options={}
+        )
             
         uk = sol.u
         u1 = uk
@@ -125,7 +139,7 @@ for case in range(3):
         T_solver.append(sol.elapsed_time_solver)
 
     print(
-        f"Total time per step ({'game-theoretic' if not centralized else 'centralized'} - method = {solver}): {np.min(T_tot)*1.e3:.2f} <= t <= {np.max(T_tot)*1.e3:.2f} ms")
+        f"Total time per step ({'game-theoretic' if not centralized else 'centralized'} - method = {solver}): {np.min(T_tot)*1.e3:.2f} ms <= t <= {np.max(T_tot)*1.e3:.2f} ms")
     # print(f"Solver time per step: {np.min(T_solver)*1.e3:.2f} <= t <= {np.max(T_solver)*1.e3:.2f} ms")
     X = np.array(X)
     Y = np.array(Y)
@@ -136,14 +150,14 @@ for case in range(3):
     time = range(Tsim)
     for i in range(ny):
         ax[0].plot(time, Y[:, i], color=colors[i],
-                   linewidth=4, label=f'$y_{i+1}$')
+                   linewidth=3, label=f'$y_{i+1}$')
         ax[0].plot(time, ref[i]*np.ones(Tsim), '--',
                    color=colors[i], linewidth=2)
     ax[0].legend(loc='lower right')
     ax[0].grid()
 
     for i in range(nu):
-        ax[1].step(time, U[:, i], linewidth=2,
+        ax[1].step(time, U[:, i], linewidth=3,
                    color=colors[i], label=f'$u_{i+1}$')
     ax[1].legend(loc='lower right')
     ax[1].grid()
@@ -151,7 +165,7 @@ for case in range(3):
     if not centralized:
         the_title += f" {'(variational-GNEs)' if variational else '(non-variational GNEs)'}"
     ax[0].set_title(the_title)
-    ax[1].set_xlabel('time step $t$')
+    ax[1].set_xlabel('time step $t$', fontsize=20)
     plt.show()
     #plt.savefig(
     #    f"example_linear_MPC_{'nash' if not centralized else 'centralized'}.pdf", bbox_inches='tight')

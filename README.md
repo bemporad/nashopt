@@ -92,7 +92,7 @@ $$
 y_{i,k} \, (u_{i,k} - x_{i,k}) = 0
 $$
 
-For general nonlinear problems, in `nashopt` primal feasibility (with respect to inequalities), dual feasibility, and complementary slackness conditions, which can be summarized as complementarity pairs $0\leq a\perp b\geq 0$, are enforced by using the nonlinear complementarity problem (NCP) Fischer–Burmeister function [1]
+For general nonlinear problems, in `nashopt` primal feasibility (with respect to inequalities), dual feasibility, and complementary slackness conditions, which can be summarized as complementarity pairs $0\leq a\perp b\geq 0$, are enforced by using the nonlinear complementarity problem (NCP) Fischer–Burmeister function <a href="#ref1">[1]</a>
 
 $$
 \phi(a, b) = \sqrt{a^2 + b^2} - a - b
@@ -410,13 +410,16 @@ $$
 
 or the sum of both, where in this case the optimal parameters $p$ are determined by MIQP (only Gurobi supported).
 
-For the special case of variational GNEs and fixed parameter $p$, by treating the vector of slack variables for the shared and local inequality constraints appearing in the game as a further player, the problem can be also solved by the proximal ADMM method of [2] by passing the argument `solver='prox-admm'`, or by Lemke's method [3] with `solver='lemke'`, or by the log-domain interior point method [4] with `solver='log_ipm'`.
+For the special case of strongly-monotone variational GNEs and fixed parameter $p$, by treating the vector of slack variables for the shared and local inequality constraints appearing in the game as a further player, the problem can be also solved by the following methods:
 
-[2] E. Börgens and C. Kanzow, "ADMM-type methods for generalized Nash equilibrium problems in Hilbert spaces," SIAM Journal on Optimization, vol. 31, n.1, pp. 377-403, 2021.
+- `solver='goldnash'`: GoldNash, a variant of Goldfarb-Idnani's algorithm <a href="#ref2">[2]</a>
+- `solver='prox-admm'`: Proximal ADMM <a href="#ref3">[3]</a>
+- `solver='lemke'`: Lemke's method <a href="#ref2">[2]</a><a href="#ref4">[4]</a>
+- `solver='lemke_dual'`: Lemke's method applied to a dual reformulation of the KKT conditions <a href="#ref2">[2]</a>
+- `solver='log_ipm'`: log-domain interior point method <a href="#ref5">[5]</a>
+- `solver='dr_daqp'`: DR-DAQP hybrid operator-splitting / active-set solver <a href="#ref6">[6]</a>
 
-[3] D.A. Schiro, J.-S. Pang, U.V. Shanbhag, "On the solution of affine generalized Nash equilibrium problems with shared constraints by Lemke’s method," Mathematical Programming, Ser. A, 142:1–46, 2013.
-
-[4] B. Liu, D. Liao-McPherson, "A Log-domain Interior Point Method for Convex Quadratic Games," American Control Conference, 2025.
+`goldnash` and `dr_daqp` are usually the fastest solvers.
 
 ## Game-Theoretic Control
 We consider non-cooperative multi-agent control problems where each agent only controls a subset of the input vector $u$ of a discrete-time linear dynamical system 
@@ -455,10 +458,7 @@ nash_lqr = NashLQR(sizes, A, B, Q, R, dare_iters=50)
 sol = nash_lqr.solve(method='riccati', riccati_iters=100, stop_tol=1e-5)
 ```
 
-with `method='riccati'`, the coupled discrete-time algebraic Riccati equations is solved instead by using `riccati_iters` Riccati-based iterations (best responses) as described in [3, Section III.B], until convergence within `stop_tol`.
-
-[3] B. Nortman, A. Monti, M. Sassano, T. Mylvaganam, "Nash Equilibria for Linear Quadratic
-Discrete-Time Dynamic Games via Iterative and Data-Driven Algorithms," IEEE Trans. Autom. Contr., vol. 69, no. 10, October 2024.
+with `method='riccati'`, the coupled discrete-time algebraic Riccati equations is solved instead by using `riccati_iters` Riccati-based iterations (best responses) as described in <a href="#ref7">[7, Section III.B]</a>, until convergence within `stop_tol`.
 
 ### Game-Theoretic Model Predictive Control
 We now want to make the output vector $y(t)$ of the system track a given setpoint $r(t)$.
@@ -548,7 +548,20 @@ sol = nash_mpc.solve(..., bc = bc)
 
 ## References
 
-> [1] Alexander Fischer. *A special Newton-type optimization method.* **Optimization**, 24(3–4):269–284, 1992.
+> <a id="ref1"></a>[1] Alexander Fischer. *A special Newton-type optimization method.* **Optimization**, 24(3–4):269–284, 1992.
+
+> <a id="ref2"></a>[2] A. Bemporad, "GoldNash: A Goldfarb-Idnani Variant for Strongly Monotone Linear-Quadratic Games," arXiv preprint, 2026.
+
+> <a id="ref3"></a>[3] E. Börgens and C. Kanzow, "ADMM-type methods for generalized Nash equilibrium problems in Hilbert spaces," SIAM Journal on Optimization, vol. 31, n.1, pp. 377-403, 2021.
+
+> <a id="ref4"></a>[4] D.A. Schiro, J.-S. Pang, U.V. Shanbhag, "On the solution of affine generalized Nash equilibrium problems with shared constraints by Lemke’s method," Mathematical Programming, Ser. A, 142:1–46, 2013.
+
+> <a id="ref5"></a>[5] B. Liu, D. Liao-McPherson, "A Log-domain Interior Point Method for Convex Quadratic Games," American Control Conference, 2025.
+
+> <a id="ref6"></a>[6] D. Arnström, E. Benenati, G. Belgioioso, "DR-DAQP: An Hybrid Operator Splitting and Active-Set Solver for Affine Variational Inequalities", arXiv:2604.02531, 2026.
+
+> <a id="ref7"></a>[7] B. Nortman, A. Monti, M. Sassano, T. Mylvaganam, "Nash Equilibria for Linear Quadratic
+Discrete-Time Dynamic Games via Iterative and Data-Driven Algorithms," IEEE Trans. Autom. Contr., vol. 69, no. 10, October 2024.
 
 ## Citation
 

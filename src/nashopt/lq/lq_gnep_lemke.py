@@ -6,10 +6,11 @@
 
 import numpy as np
 from quantecon.optimize import lcp_lemke
+from quantecon.optimize.linprog_simplex import PivOptions
 from types import SimpleNamespace
 import time
 
-def solve(Q, S, p, A, b, lb, ub=None):
+def solve(Q, S, p, A, b, lb, ub=None, max_iter=10**6, tol=1e-12):
     """
     Attempts to compute a variational GNE of the LQ-GNEP via Lemke's method.
 
@@ -36,18 +37,18 @@ def solve(Q, S, p, A, b, lb, ub=None):
     ub : (nN,) array or None           upper bounds on x. When given, the rows
                                        -I x + ub >= 0 are prepended to (A, b)
                                        automatically. Default: None.
+    max_iter : int                     maximum number of iterations for Lemke's method (default: 10^6)
+    tol : float                        tolerance for pivoting and ratio tests in Lemke's method (default: 1e-12)
 
     Returns
     -------
-    GNEResult namedtuple:
-        x        (nN,)  equilibrium strategies  (NaN if Lemke fails)
-        lam      (m,)   common VE multipliers   (NaN if Lemke fails)
-                        satisfies  W x + p_vec = A_aug.T lam  where A_aug is the
-                        internally augmented constraint matrix (ub rows, if any,
-                        prepended before the user-supplied rows)
-        status   int    0 = solution, 1 = iter-limit, 2 = ray-termination
-        num_iter int    number of Lemke pivots performed
-        success  bool   True iff a VE was found
+    sol : SimpleNamespace with fields
+        x = solution
+        lam = Lagrange multipliers, not split by agent
+        status = info returned by lemke_lcp solver
+        num_iters = number of iterations performed by lemke_lcp
+        success = True the LCP problem was solved
+        elapsed_time = elapsed time in seconds
 
     LCP formulation (variable shift  y = x - lb >= 0)
     --------------------------------------------------
@@ -116,7 +117,8 @@ def solve(Q, S, p, A, b, lb, ub=None):
     q_lcp = np.concatenate([p_tilde, b_shift])
 
     # Call Lemke's method to solve the LCP
-    res = lcp_lemke(M_lcp.astype(float), q_lcp.astype(float))
+    piv_opts = PivOptions(tol_piv=tol, tol_ratio_diff=tol)
+    res = lcp_lemke(M_lcp.astype(float), q_lcp.astype(float), max_iter=max_iter, piv_options=piv_opts)
 
     if res.success:
         y_star   = res.z[:nN]

@@ -15,7 +15,7 @@ import time
 from ..lq.gnep_lq import GNEP_LQ
 
 class NashLinearMPC():
-    def __init__(self, sizes, A, B, C, Qy, Qdu, T, ymin=None, ymax=None, umin=None, umax=None, dumin=None, dumax=None, Qeps=None, Tc=None, Acx=None, Acu=None, Acdu=None, bc=None):
+    def __init__(self, sizes, A, B, C, Qy, Qdu, T, ymin=None, ymax=None, umin=None, umax=None, dumin=None, dumax=None, Qeps=None, Qeps2=None, Tc=None, Acx=None, Acu=None, Acdu=None, bc=None, check_monotone=False):
         """Set up a game-theoretic linear MPC problem with N agents for set-point tracking. 
 
         The dynamics are given by
@@ -39,7 +39,7 @@ class NashLinearMPC():
 
             -sum_i(eps[i]) + y_min <= y(k+1) <= y_max + sum_i(eps[i])
 
-        where eps[i] >= 0 is a slack variable penalized in the cost function with the linear term Qeps[i]*eps[i] to soften the output constraints and prevent infeasibility issues. By default, the constraints are imposed at all time steps k=0 ... T-1, but if a constraint horizon Tc<T is provided, they are only imposed up to time Tc-1.
+        where eps[i] >= 0 is a slack variable penalized in the cost function with the linear term Qeps[i]*eps[i] + Qeps2[i]*eps[i]^2 to soften the output constraints and prevent infeasibility issues. By default, the constraints are imposed at all time steps k=0 ... T-1, but if a constraint horizon Tc<T is provided, they are only imposed up to time Tc-1.
 
         The problem is solved via MILP to compute the first input increment du_{0,i} of each agent to apply to the system to close the loop.
 
@@ -81,6 +81,8 @@ class NashLinearMPC():
             Upper bound on input increments. If None, no upper bound is applied.
         Qeps : float, list, or None, optional
             List of slack variable penalties for each agent. If None, a default value of 1.e3 is used for all agents.
+        Qeps2 : float, list, or None, optional
+            List of quadratic slack variable penalties for each agent. If None, a default value of 0.0 is used for all agents.
         Tc : int, optional
             Constraint horizon. If None, constraints are applied over the entire prediction horizon T.
         Acx : ndarray, optional
@@ -91,6 +93,8 @@ class NashLinearMPC():
             Matrix for additional shared polyhedral constraints on the initial input increment. If None, no such constraints are applied.
         bc : ndarray, optional
             RHS for additional shared polyhedral constraints. If None, no such constraints are applied. It can be modified at runtime by passing the value bc(t) via the solve() method.
+        check_monotone : bool, optional
+            If True, check whether the game is monotone by verifying that the symmetric part of the pseudogradient matrix is positive definite. Certain variational solvers (like goldnash) require monotonicity to guarantee convergence, so this can be used to detect potential issues with solver convergence.
         """
 
         self.sizes = sizes
@@ -141,8 +145,19 @@ class NashLinearMPC():
         else:
             if len(Qeps) != N:
                 raise ValueError(
-                    f"Qeps must be a list of length equal to number {N} of agents")
+                    f"Qeps must be a list of length equal to number {N} of agents")        
         self.Qeps = Qeps
+        
+        if Qeps2 is None:
+            Qeps2 = [0.0]*N
+        elif not isinstance(Qeps2, list):
+            Qeps2 = [Qeps2]*N
+        else:
+            if len(Qeps2) != N:
+                raise ValueError(
+                    f"Qeps2 must be a list of length equal to number {N} of agents")
+        self.Qeps2 = Qeps2
+                
         self.T = T  # prediction horizon
         self.Tc = min(Tc, T) if Tc is not None else T  # constraint horizon
 
@@ -218,7 +233,7 @@ class NashLinearMPC():
         self.Acdu = Acdu
         self.bc = bc
 
-        def build_qp(A, B, C, Qy, Qdu, Qeps, sizes, N, T, ymin, ymax, umin, umax, dumin, dumax, Tc, Acx, Acu, Acdu, bc):
+        def build_qp(A, B, C, Qy, Qdu, Qeps, Qeps2, sizes, N, T, ymin, ymax, umin, umax, dumin, dumax, Tc, Acx, Acu, Acdu, bc):
             # Construct QP problem to solve linear MPC for a generic input sequence du
             nx, nu = B.shape
             ny = C.shape[0]
@@ -271,7 +286,7 @@ class NashLinearMPC():
 
             # The overall optimization vector is z = [du_0; ...; du_{T-1}, eps, lambda, w]
             # Cost function: .5*[[dU;eps]' H [dU;eps] + (c + F @ [x0;u(-1);w])' [U;eps] + const
-            H = [block_diag(Su_y.T @ Qblk[i] @ Su_y + Rblk, np.zeros((N, N)))
+            H = [block_diag(Su_y.T @ Qblk[i] @ Su_y + Rblk, np.diag(Qeps2[i]*np.ones(N)))
                  for i in range(N)]  # [(T*nu+N x T*nu+N)]
             F = [np.vstack((np.hstack((Su_y.T @ Qblk[i] @ Sx_y, -Su_y.T @ Qblk[i] @ E)),
                            np.zeros((N, nx+nu+ny)))) for i in range(N)]  # [(N*nu+1 x (nx + nu + ny))]
@@ -341,7 +356,7 @@ class NashLinearMPC():
             return H, c, F, A_con, b_con, B_con, lb, ub, ii_c
 
         H, c, F, A_con, b_con, B_con, lb, ub, ii_c = build_qp(
-            A, B, C, Qy, Qdu, Qeps, sizes, N, T, ymin, ymax, umin, umax, dumin, dumax, self.Tc, Acx, Acu, Acdu, bc)
+            A, B, C, Qy, Qdu, Qeps, Qeps2, sizes, N, T, ymin, ymax, umin, umax, dumin, dumax, self.Tc, Acx, Acu, Acdu, bc)
 
         # Rearrange optimization variables to have all agents' variables together at each time step
         # Original z ordering:
@@ -390,8 +405,20 @@ class NashLinearMPC():
             self.ub[off+Tc*si:off+T*si] = np.inf
             off += T*si + 1  # Each agent optimizes du_i(0)..du_i(T-1), eps_i
         self.iperm = np.argsort(perm)  # inverse permutation
+        
+        # each agent's variable is [du_i(0); ...; du_i(T-1); eps_i]
+        self.sizes = [si*T+1 for si in self.sizes]
 
-    def solve(self, x0, u1, ref, M=1.e4, variational=False, centralized=False, solver='highs', bc=None):
+        if check_monotone:
+            # Check monotonicity by verifying that the symmetric part of the pseudogradient matrix is positive definite
+            dummy_gnep = GNEP_LQ(self.sizes, self.H, self.c)
+            is_monotone = dummy_gnep.is_monotone(verbose=True, return_min_eig=True)
+            self.is_monotone = is_monotone
+        else:
+            self.is_monotone = None
+            
+
+    def solve(self, x0, u1, ref, M=1.e4, variational=True, centralized=False, solver=None, bc=None, solver_options=None):
         """Solve game-theoretic linear MPC problem for a given reference via MILP.
         
         Parameters
@@ -405,13 +432,16 @@ class NashLinearMPC():
         M : float, optional
             Big-M parameter for MILP formulation.
         variational : bool, optional
-            If True, compute a variational equilibrium by adding the necessary equality constraints on the multipliers of the shared output constraints. 
+            If True, compute a variational equilibrium by adding the necessary consensus constraints on the multipliers of the shared output constraints. 
         centralized : bool, optional
             If True, solve a centralized MPC problem via QP using osQP instead of the game-theoretic one.
         solver : str, optional
-            LQ-GNEP solver to use: 'highs', 'gurobi' (MILP) or 'prox_admm', 'lemke', 'log_ipm' (only when 'variational=True').
+            LQ-GNEP solver to use: 'highs', 'gurobi' (MILP) for non-variational or variational games, 
+            or 'goldnash', 'prox_admm', 'lemke', 'lemke_dual', 'dr_daqp', 'log_ipm' (only when 'variational=True').
         bc : ndarray, optional
             RHS for additional shared polyhedral constraints possibly imposed at current time step. If None, the value provided during initialization is used, or no such constraints were specified at construction.
+        solver_options : dict, optional
+            Additional options to pass to the solver.
             
         Returns
         -------
@@ -429,12 +459,17 @@ class NashLinearMPC():
                 Elapsed time for solver only in seconds.
         """
         T = self.T
-        # each agent's variable is [du_i(0); ...; du_i(T-1); eps_i]
-        sizes = [si*T+1 for si in self.sizes]
+        sizes = self.sizes
         nu = self.nu
         if variational and centralized:
             print(
                 "\033[1;31mWarning: variational equilibrium ignored in centralized MPC.\033[0m")
+            
+        if solver is None:
+            if variational:
+                solver = 'lemke'  # default solver for variational GNEs
+            else:
+                solver = 'highs'  # default solver for non-variational GNEs 
 
         if not self.has_poly_constraints and bc is not None:
             raise ValueError("No additional constraints were specified at construction, but bc value is provided at solve time.")
@@ -467,7 +502,7 @@ class NashLinearMPC():
         elapsed_time_build = time.perf_counter() - t0
 
         if not centralized:
-            gnep_sol = gnep.solve()
+            gnep_sol = gnep.solve(solver_options=solver_options)
             if gnep_sol is None:
                 raise ValueError("No GNE solution found for game-theoretic MPC problem.")
             z = gnep_sol.x
@@ -496,4 +531,5 @@ class NashLinearMPC():
         sol.eps = zeps_seq[-self.N:]
         sol.elapsed_time = elapsed_time_build + elapsed_time_solver
         sol.elapsed_time_solver = elapsed_time_solver
+        sol.gnep = gnep if not centralized else None  # return gnep object for additional info if game-theoretic problem solved
         return sol

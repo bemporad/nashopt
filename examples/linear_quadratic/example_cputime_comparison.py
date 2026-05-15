@@ -50,7 +50,7 @@ for N in range(2, max_size+1):
     Q = []
     c = []
     for i in range(N):
-        Qi = np.eye(nvar)
+        Qi = np.eye(nvar) # Note that Qi = I, then the game is potential
         Q.append(Qi)
         ci = i*np.ones(nvar)
         c.append(ci)
