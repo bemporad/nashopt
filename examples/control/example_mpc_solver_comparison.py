@@ -1,9 +1,8 @@
 """
 Game-theoretic linear MPC example comparing different solvers, as reported in:
 
-A. Bemporad, "GoldNash: A Goldfarb-Idnani Variant for Strongly Monotone Linear-Quadratic Games,"
-arXiv preprint, 2026.
-
+[1] A. Bemporad, "GoldNash: A Goldfarb-Idnani Variant for Strongly Monotone Linear-Quadratic Games," 
+arXiv preprint 2605.16002, 2026.   https://arxiv.org/abs/2605.16002
 
 (C) 2026 A. Bemporad
 """

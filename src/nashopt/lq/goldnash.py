@@ -10,6 +10,8 @@ where x_i in R^{n_i} is player i's decision variable and sum(n_i) = nvar. Each p
 
 subject to the joint constraints  A x <= b  and  E x = f. Possible local constraints on x_i, including lower and upper bounds, are considered encoded by appropriate rows in A, E and corresponding entries in b, f.
 
+[1] A. Bemporad, “GoldNash: A Goldfarb-Idnani variant for strongly monotone linear-quadratic games,” 2026. Available on arXiv at https://arxiv.org/abs/2605.16002. 
+
 (C) 2026, A. Bemporad
 """
 

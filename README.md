@@ -550,7 +550,7 @@ sol = nash_mpc.solve(..., bc = bc)
 
 > <a id="ref1"></a>[1] Alexander Fischer. *A special Newton-type optimization method.* **Optimization**, 24(3–4):269–284, 1992.
 
-> <a id="ref2"></a>[2] A. Bemporad, "GoldNash: A Goldfarb-Idnani Variant for Strongly Monotone Linear-Quadratic Games," arXiv preprint, 2026.
+> <a id="ref2"></a>[2] A. Bemporad, <a href="https://arxiv.org/abs/2605.16002">"GoldNash: A Goldfarb-Idnani Variant for Strongly Monotone Linear-Quadratic Games,"</a> arXiv preprint 2605.16002, 2026.
 
 > <a id="ref3"></a>[3] E. Börgens and C. Kanzow, "ADMM-type methods for generalized Nash equilibrium problems in Hilbert spaces," SIAM Journal on Optimization, vol. 31, n.1, pp. 377-403, 2021.
 
