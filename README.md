@@ -412,14 +412,13 @@ or the sum of both, where in this case the optimal parameters $p$ are determined
 
 For the special case of strongly-monotone variational GNEs and fixed parameter $p$, by treating the vector of slack variables for the shared and local inequality constraints appearing in the game as a further player, the problem can be also solved by the following methods:
 
-- `solver='goldnash'`: GoldNash, a variant of Goldfarb-Idnani's algorithm <a href="#ref2">[2]</a>
-- `solver='prox-admm'`: Proximal ADMM <a href="#ref3">[3]</a>
-- `solver='lemke'`: Lemke's method <a href="#ref2">[2]</a><a href="#ref4">[4]</a>
-- `solver='lemke_dual'`: Lemke's method applied to a dual reformulation of the KKT conditions <a href="#ref2">[2]</a>
-- `solver='log_ipm'`: log-domain interior point method <a href="#ref5">[5]</a>
-- `solver='dr_daqp'`: DR-DAQP hybrid operator-splitting / active-set solver <a href="#ref6">[6]</a>
+- `solver='prox-admm'`: Proximal ADMM <a href="#ref2">[1]</a>
+- `solver='lemke'`: Lemke's method <a href="#ref3">[3]</a>
+- `solver='lemke_dual'`: Lemke's method applied to a dual reformulation of the KKT conditions
+- `solver='log_ipm'`: log-domain interior point method <a href="#ref4">[4]</a>
+- `solver='dr_daqp'`: DR-DAQP hybrid operator-splitting / active-set solver <a href="#ref5">[5]</a>
 
-`goldnash` and `dr_daqp` are usually the fastest solvers.
+`dr_daqp` is usually the fastest solver.
 
 ## Game-Theoretic Control
 We consider non-cooperative multi-agent control problems where each agent only controls a subset of the input vector $u$ of a discrete-time linear dynamical system 
@@ -548,19 +547,17 @@ sol = nash_mpc.solve(..., bc = bc)
 
 ## References
 
-> <a id="ref1"></a>[1] Alexander Fischer. *A special Newton-type optimization method.* **Optimization**, 24(3–4):269–284, 1992.
+> <a id="ref1"></a>[1] A. Fischer. *A special Newton-type optimization method.* **Optimization**, 24(3–4):269–284, 1992.
 
-> <a id="ref2"></a>[2] A. Bemporad, <a href="https://arxiv.org/abs/2605.16002">"GoldNash: A Goldfarb-Idnani Variant for Strongly Monotone Linear-Quadratic Games,"</a> arXiv preprint 2605.16002, 2026.
+> <a id="ref2"></a>[2] E. Börgens and C. Kanzow, "ADMM-type methods for generalized Nash equilibrium problems in Hilbert spaces," SIAM Journal on Optimization, vol. 31, n.1, pp. 377-403, 2021.
 
-> <a id="ref3"></a>[3] E. Börgens and C. Kanzow, "ADMM-type methods for generalized Nash equilibrium problems in Hilbert spaces," SIAM Journal on Optimization, vol. 31, n.1, pp. 377-403, 2021.
+> <a id="ref3"></a>[3] D.A. Schiro, J.-S. Pang, U.V. Shanbhag, "On the solution of affine generalized Nash equilibrium problems with shared constraints by Lemke’s method," Mathematical Programming, Ser. A, 142:1–46, 2013.
 
-> <a id="ref4"></a>[4] D.A. Schiro, J.-S. Pang, U.V. Shanbhag, "On the solution of affine generalized Nash equilibrium problems with shared constraints by Lemke’s method," Mathematical Programming, Ser. A, 142:1–46, 2013.
+> <a id="ref4"></a>[4] B. Liu, D. Liao-McPherson, "A Log-domain Interior Point Method for Convex Quadratic Games," American Control Conference, 2025.
 
-> <a id="ref5"></a>[5] B. Liu, D. Liao-McPherson, "A Log-domain Interior Point Method for Convex Quadratic Games," American Control Conference, 2025.
+> <a id="ref5"></a>[5] D. Arnström, E. Benenati, G. Belgioioso, "DR-DAQP: An Hybrid Operator Splitting and Active-Set Solver for Affine Variational Inequalities", arXiv:2604.02531, 2026.
 
-> <a id="ref6"></a>[6] D. Arnström, E. Benenati, G. Belgioioso, "DR-DAQP: An Hybrid Operator Splitting and Active-Set Solver for Affine Variational Inequalities", arXiv:2604.02531, 2026.
-
-> <a id="ref7"></a>[7] B. Nortman, A. Monti, M. Sassano, T. Mylvaganam, "Nash Equilibria for Linear Quadratic
+> <a id="ref6"></a>[6] B. Nortman, A. Monti, M. Sassano, T. Mylvaganam, "Nash Equilibria for Linear Quadratic
 Discrete-Time Dynamic Games via Iterative and Data-Driven Algorithms," IEEE Trans. Autom. Contr., vol. 69, no. 10, October 2024.
 
 ## Citation

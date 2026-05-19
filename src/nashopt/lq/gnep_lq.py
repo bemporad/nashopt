@@ -110,12 +110,12 @@ class GNEP_LQ():
             - "highs" (default) mixed-integer programming solver
             - "gurobi" mixed-integer programming solver
             - "prox_admm" proximal ADMM algorithm (Borgens and Kanzow, 2021), only for variational non-parametric GNEPs
-            - "goldnash" GoldNash algorithm (Bemporad, 2026), only for strongly-monotone variational non-parametric GNEPs
+            - "goldnash" GoldNash algorithm (Bemporad, 2026), only to attempt solving strongly-monotone variational non-parametric GNEPs. The solver may fail to find a solution in some rare cases. 
             - "lemke" Lemke's method for LCPs, only for variational non-parametric GNEPs with lower-bounded variables and no equality constraints.
             - "lemke_dual" Lemke's method applied on the dual reformulation of the KKT conditions of the game, only for variational non-parametric GNEPs. 
             - "log_ipm" logarithmic barrier interior point method, only for variational non-parametric GNEPs
             - "dr_daqp" Douglas-Rachford operator splitting with an active-set acceleration strategy (Arnstrom, Benenati, Belgioioso, 2026). See https://darnstrom.github.io/daqp/start/advanced/avi.
-            Only for strongly-monotone variational non-parametric GNEPs
+            Only for strongly-monotone variational non-parametric GNEPs. Usually the fastest method.
 
         (C) 2025-2026 Alberto Bemporad
         """

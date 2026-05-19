@@ -25,7 +25,7 @@ import numpy as np
 import warnings
 from nashopt import GNEP_LQ
 
-N_INSTANCES = 100
+N_INSTANCES = 10
 
 SOLVERS = ["lemke", "lemke_dual", "goldnash", "dr_daqp", "prox_admm", "log_ipm"]
 
@@ -59,7 +59,7 @@ def make_instance(N, n, m, q, rng):
 
     # Enforce strong monotonicity: shift diagonal blocks so lambda_min = MONOTONE_EPS
     lam_min = np.linalg.eigvalsh(0.5 * (G + G.T)).min()
-    shift = MONOTONE_EPS + min(-lam_min,0.) 
+    shift = MONOTONE_EPS + max(-lam_min,0.) 
     if shift > 0:
         for i in range(N):
             si, ei = i * n, (i + 1) * n

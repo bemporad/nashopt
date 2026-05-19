@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nashopt"
-version = "1.2.1"
+version = "1.2.2"
 authors = [
   { name="Alberto Bemporad", email="alberto.bemporad@imtlucca.it" }
 ]
 description = "NashOpt - A Python Library for Computing Generalized Nash Equilibria and Solving Game-Design and Game-Theoretic Control Problems."
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = ["numpy","jax","jaxopt","scipy","highspy","osqp","daqp","quantecon"]
+dependencies = ["numpy","jax","jaxopt","scipy","highspy","osqp","daqp>=0.8.7","quantecon"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",

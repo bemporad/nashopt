@@ -1,6 +1,6 @@
 """
-GoldNash - A variant of Goldfarb-Idnani dual active-set algorithm adapted for computing the
-variational Generalized Nash Equilibrium (v-GNE) of an N-player
+GoldNash - A variant of Goldfarb-Idnani dual active-set algorithm adapted for 
+attempting computing the variational Generalized Nash Equilibrium (v-GNE) of an N-player
 linear-quadratic game with shared affine constraints (inequalities and equalities).
 
 The algorithm assumes an N-player game with decision vector  x = (x_1, ..., x_N) in R^{nvar},
@@ -10,7 +10,9 @@ where x_i in R^{n_i} is player i's decision variable and sum(n_i) = nvar. Each p
 
 subject to the joint constraints  A x <= b  and  E x = f. Possible local constraints on x_i, including lower and upper bounds, are considered encoded by appropriate rows in A, E and corresponding entries in b, f.
 
-[1] A. Bemporad, “GoldNash: A Goldfarb-Idnani variant for strongly monotone linear-quadratic games,” 2026. Available on arXiv at https://arxiv.org/abs/2605.16002. 
+[1] A. Bemporad, "GoldNash: A Goldfarb-Idnani variant for strongly monotone linear-quadratic games," 2026. Available on arXiv at https://arxiv.org/abs/2605.16002. 
+
+NOTE: the algorithm is not guaranteed to always converge to the v-GNE, and may fail in some rare cases.
 
 (C) 2026, A. Bemporad
 """
