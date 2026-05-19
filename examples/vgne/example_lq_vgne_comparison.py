@@ -30,7 +30,7 @@ N_INSTANCES = 100
 SOLVERS = ["lemke", "lemke_dual", "goldnash", "dr_daqp", "prox_admm", "log_ipm"]
 
 # N values; n=5, m=2*N*n; q varies per run
-CONFIGS = [30] #[2, 3, 5, 10, 20, 30, 50, 100]
+CONFIGS = [2, 3, 5, 10, 20, 30, 50, 100]
 
 RUNS = [
     ("no equalities ($q=0$)",          lambda N: (N, 5, 2*N*5,    0)),

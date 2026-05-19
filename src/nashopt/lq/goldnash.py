@@ -17,7 +17,6 @@ subject to the joint constraints  A x <= b  and  E x = f. Possible local constra
 
 import numpy as np
 from scipy.linalg import lu_factor, lu_solve
-from typing import Any, Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
 # S_bar^{-1} update kernels
@@ -67,20 +66,7 @@ def _refresh_S_inv(W, E, A, Y_A, Z_A, EY_E, has_eq, neq):
 # -----------------------------------------------------------------------------
 
 def goldnash(
-    Q: List[np.ndarray],
-    c: List[np.ndarray],
-    dim: List[int],
-    *,
-    A: np.ndarray,
-    b: np.ndarray,
-    E: np.ndarray = None,
-    f: np.ndarray = None,
-    max_iter: int = 10000,
-    tol: float = 1e-10,
-    verbose: bool = False,
-    check_monotone: bool = False,
-    refresh_freq: int = 0,
-) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    Q, c, dim, A=None, b=None, E=None, f=None, max_iter=10000, tol=1e-10, verbose=False, check_monotone=False, refresh_freq=0, cache=None, return_cache=False):
     """
     Solve the v-GNE of an LQ game with shared affine constraints.
 
@@ -113,6 +99,11 @@ def goldnash(
     refresh_freq : int, optional
                Recompute S_bar^{-1} from scratch every this many ADD/DROP steps
                to limit numerical drift (set 0 to disable).
+    cache    : dict, optional
+              Cached matrices to reuse across multiple calls with the same Q, A, E. Default None. 
+    return_cache : bool, optional
+              If True, return the cache dict with precomputed matrices for potential reuse in subsequent calls with the same Q, A, E. Default False.
+    
     Returns
     -------
     x_star   : array (nvar,)
@@ -180,19 +171,24 @@ def goldnash(
 
     # Assemble pseudogradient  F(x) = G x + r
     starts = [0] + list(np.cumsum(dim))
-    G      = np.zeros((nvar, nvar))
     r      = np.zeros(nvar)
-
     for i in range(N):
         ri = slice(starts[i], starts[i + 1])
-        Qi = np.asarray(Q[i], dtype=float)
         ci = np.asarray(c[i], dtype=float).ravel()
-        if Qi.shape != (nvar, nvar):
-            raise ValueError(f"Q[{i}] must be ({nvar},{nvar}), got {Qi.shape}.")
         if ci.size != nvar:
             raise ValueError(f"c[{i}] must have length {nvar}, got {ci.size}.")
-        G[ri, :] = Qi[ri, :]
         r[ri]    = ci[ri]
+    
+    if cache is not None:
+        G = cache["G"]
+    else:
+        G = np.zeros((nvar, nvar))
+        for i in range(N):
+            ri = slice(starts[i], starts[i + 1])
+            Qi = np.asarray(Q[i], dtype=float)
+            if Qi.shape != (nvar, nvar):
+                raise ValueError(f"Q[{i}] must be ({nvar},{nvar}), got {Qi.shape}.")
+            G[ri, :] = Qi[ri, :]
 
     # Verify strong monotonicity of the game
     if check_monotone:
@@ -205,14 +201,19 @@ def goldnash(
             )
 
     # Factor G. Note: if Gs > 0  ->  G is invertible and w'G^{-1}w > 0 for w != 0.
-    try:
-        G_lu, G_piv = lu_factor(G)
-    except Exception as exc:
-        raise ValueError("LU factorization of pseudogradient matrix failed, it may be singular.") from exc
-
-    if has_eq:
-        Y_E  = lu_solve((G_lu, G_piv), E.T)            # (nvar, neq)
-        EY_E = E @ Y_E                                  # (neq, neq); = E G^{-1} E^T
+    if cache is not None:
+        G_lu, G_piv = cache["G_lu"], cache["G_piv"]
+        if has_eq:
+            Y_E  = cache["Y_E"]            # (nvar, neq)
+            EY_E = cache["EY_E"]          # (neq, neq)
+    else:
+        try:
+            G_lu, G_piv = lu_factor(G)
+        except Exception as exc:
+            raise ValueError("LU factorization of pseudogradient matrix failed, it may be singular.") from exc
+        if has_eq:
+            Y_E  = lu_solve((G_lu, G_piv), E.T)            # (nvar, neq)
+            EY_E = E @ Y_E                                  # (neq, neq); = E G^{-1} E^T
 
     # Initialize solution
     #
@@ -246,16 +247,22 @@ def goldnash(
         # Precompute Y = G^{-1}A^T, Z = G^{-T}A^T
         # Y_A[:,k] = G^{-1} a_k  (primal step ingredients)
         # Z_A[:,k] = G^{-T} a_k  (needed for the d-row in the bordered S_bar update)
-        Y_A = lu_solve((G_lu, G_piv), A.T)            # (nvar, ncon)
-        Z_A = lu_solve((G_lu, G_piv), A.T, trans=1)   # (nvar, ncon); G^{-T} A^T
+        if cache is not None:
+            Y_A, Z_A = cache["Y_A"], cache["Z_A"]
+        else:
+            Y_A = lu_solve((G_lu, G_piv), A.T)            # (nvar, ncon)
+            Z_A = lu_solve((G_lu, G_piv), A.T, trans=1)   # (nvar, ncon); G^{-T} A^T
 
-        W: List[int] = []                    # working set: active inequality indices
+        W = []                    # working set: active inequality indices
 
         # S_bar = A_bar_W G^{-1} A_bar_W^T; we maintain S_inv = S_bar^{-1} directly.
         # Row/column ordering: equality rows first [0..neq-1], then inequality rows
         # in insertion order [neq..neq+|W|-1].
         if has_eq:
-            S_inv = np.linalg.inv(E @ Y_E)  # (neq, neq)
+            if cache is not None:
+                S_inv = cache["S_inv"] # (neq, neq)
+            else:
+                S_inv = np.linalg.inv(E @ Y_E)  # (neq, neq)
         else:
             S_inv = None
         update_count = 0
@@ -433,6 +440,20 @@ def goldnash(
         eq_res  = 0.0
         kkt_res = float(np.linalg.norm(G @ x + r + A.T @ lam))
 
+    if return_cache:
+        cache_out = {
+            "G": G,
+            "G_lu": G_lu,
+            "G_piv": G_piv,
+            "Y_E": Y_E if has_eq else None,
+            "EY_E": EY_E if has_eq else None,
+            "Y_A": Y_A,
+            "Z_A": Z_A,
+            "S_inv": S_inv if ell > 0 else None,
+        }
+    else:
+        cache_out = None
+
     info = {
         "status":           status,
         "outer_iterations": outer_iter,
@@ -442,6 +463,7 @@ def goldnash(
         "kkt_residual":     kkt_res,
         "lam":              lam,
         "nu":               nu,
+        "cache":            cache_out
     }
-
+    
     return x, info
