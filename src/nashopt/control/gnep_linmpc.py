@@ -94,7 +94,7 @@ class NashLinearMPC():
         bc : ndarray, optional
             RHS for additional shared polyhedral constraints. If None, no such constraints are applied. It can be modified at runtime by passing the value bc(t) via the solve() method.
         check_monotone : bool, optional
-            If True, check whether the game is monotone by verifying that the symmetric part of the pseudogradient matrix is positive definite. Certain variational solvers (like goldnash) require monotonicity to guarantee convergence, so this can be used to detect potential issues with solver convergence.
+            If True, check whether the game is monotone by verifying that the symmetric part of the pseudogradient matrix is positive definite. Certain variational solvers (like dr_daqp) require monotonicity to guarantee convergence, so this can be used to detect potential issues with solver convergence.
         """
 
         self.sizes = sizes
@@ -233,9 +233,6 @@ class NashLinearMPC():
         self.Acdu = Acdu
         self.bc = bc
         
-        self._is_goldnash_cache = False  # flag to indicate whether matrices for goldnash have been cached for possible reuse in subsequent iterations with different x0, u1, or ref values
-        self._goldnash_cache = None  # dictionary to store cached matrices for goldnash solver
-
         def build_qp(A, B, C, Qy, Qdu, Qeps, Qeps2, sizes, N, T, ymin, ymax, umin, umax, dumin, dumax, Tc, Acx, Acu, Acdu, bc):
             # Construct QP problem to solve linear MPC for a generic input sequence du
             nx, nu = B.shape
@@ -440,7 +437,7 @@ class NashLinearMPC():
             If True, solve a centralized MPC problem via QP using osQP instead of the game-theoretic one.
         solver : str, optional
             LQ-GNEP solver to use: 'highs', 'gurobi' (MILP) for non-variational or variational games, 
-            or 'goldnash', 'prox_admm', 'lemke', 'lemke_dual', 'dr_daqp', 'log_ipm' (only when 'variational=True').
+            or 'prox_admm', 'lemke', 'lemke_dual', 'dr_daqp', 'log_ipm' (only when 'variational=True').
         bc : ndarray, optional
             RHS for additional shared polyhedral constraints possibly imposed at current time step. If None, the value provided during initialization is used, or no such constraints were specified at construction.
         solver_options : dict, optional
@@ -505,24 +502,11 @@ class NashLinearMPC():
         elapsed_time_build = time.perf_counter() - t0
 
         if not centralized:
-            if solver == 'goldnash':
-                if self._is_goldnash_cache:
-                    # Use cached matrices
-                    solver_options["cache"] = self._goldnash_cache
-                    solver_options["return_cache"] = False
-                else:
-                    # Request solver to return cache for possible reuse in subsequent iterations with different x0, u1, or ref values
-                    solver_options["cache"] = None
-                    solver_options["return_cache"] = True
             gnep_sol = gnep.solve(solver_options=solver_options)
             if gnep_sol is None:
                 raise ValueError("No GNE solution found for game-theoretic MPC problem.")
             z = gnep_sol.x
             elapsed_time_solver = gnep_sol.elapsed_time
-            if solver == 'goldnash' and not self._is_goldnash_cache:
-                # Cache matrices for possible reuse in subsequent iterations with different x0, u1, or ref values
-                self._goldnash_cache = gnep_sol.info["cache"]  # store gnep object containing factorization and other info for warm-starting goldnash in subsequent iterations
-                self._is_goldnash_cache = True
         else:
             # prob.update(q=c_cen, u=b) # We could speedup by storing prob and reusing previous factorizations
             res = prob.solve()  # Solve QP problem

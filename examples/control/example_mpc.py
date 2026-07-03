@@ -92,7 +92,6 @@ for case in range(3):
         variational = True
         centralized = False
         solver = 'lemke'
-        #solver = 'goldnash'  # requires strong monotonicity 
         #solver = 'dr_daqp' # requires strong monotonicity 
         #solver = 'prox_admm'
         #solver = 'lemke_dual'

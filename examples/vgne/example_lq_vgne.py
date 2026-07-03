@@ -101,15 +101,6 @@ sol_dr_daqp  = gnep_dr_daqp.solve()
 t_dr_daqp    = sol_dr_daqp.elapsed_time
 x_dr_daqp    = sol_dr_daqp.x
 
-gnep_goldnash = GNEP_LQ(
-    dim=[n_p] * N, Q=Q_nash, c=c_nash,
-    A=AA, b=bb, lb=lb, ub=ub,
-    variational=True, solver="goldnash",
-)
-sol_goldnash  = gnep_goldnash.solve()
-t_goldnash    = sol_goldnash.elapsed_time
-x_goldnash    = sol_goldnash.x
-
 if solve_milp:
     gnep_milp = GNEP_LQ(
         dim=[n_p] * N, Q=Q_nash, c=c_nash,
@@ -144,7 +135,6 @@ d_lemke_dual = br_distance(x_lemke_dual, gnep_lemke_dual)
 d_ipm   = br_distance(x_ipm, gnep_ipm)
 d_admm  = br_distance(x_admm, gnep_admm)
 d_dr_daqp  = br_distance(x_dr_daqp, gnep_dr_daqp)
-d_goldnash  = br_distance(x_goldnash, gnep_goldnash)
 d_milp  = br_distance(x_milp, gnep_milp) if solve_milp else float("nan")
 
 STATUS_LEMKE = {0: "solution", 1: "iter-limit", 2: "ray-term"}
@@ -162,7 +152,6 @@ print(f"  {'Log-IPM':<14}  {t_ipm:8.6f}  {d_ipm:10.2e}"
       f" {info_ipm['outer_iters']} outer iters,  mu={info_ipm['mu']:.1e}")
 print(f"  {'Prox-ADMM':<14}  {t_admm:8.6f}  {d_admm:10.2e}")
 print(f"  {'DR-DAQP':<14}  {t_dr_daqp:8.6f}  {d_dr_daqp:10.2e}")
-print(f"  {'GoldNash':<14}  {t_goldnash:8.6f}  {d_goldnash:10.2e}")
 if solve_milp:
     print(f"  {'MILP':<14}  {t_milp:8.6f}  {d_milp:10.2e}")
 print(f"{'-'*62}")
@@ -172,7 +161,6 @@ print(f"  ||x_Lemke  - x_Lemke-Dual || = {np.linalg.norm(x_lemke - x_lemke_dual)
 print(f"  ||x_Lemke  - x_IPM || = {np.linalg.norm(x_lemke - x_ipm):.3e}")
 print(f"  ||x_Lemke  - x_ADMM|| = {np.linalg.norm(x_lemke - x_admm):.3e}")
 print(f"  ||x_Lemke  - x_DR-DAQP|| = {np.linalg.norm(x_lemke - x_dr_daqp):.3e}")
-print(f"  ||x_Lemke  - x_GoldNash|| = {np.linalg.norm(x_lemke - x_goldnash):.3e}")
 if solve_milp:
     print(f"  ||x_Lemke  - x_MILP|| = {np.linalg.norm(x_lemke - x_milp):.3e}")
 
@@ -180,8 +168,8 @@ if n_p <= 3:
     print(f"\n{'-'*62}")
     print(f"  Player strategies x*")
     print(f"{'-'*62}")
-    print(f"  {'Player':>8}  {'Lemke':^24}  {'Lemke-Dual':^24}  {'Log-IPM':^24}  {'Prox-ADMM':^24}  {'DR-DAQP':^24}  {'GoldNash':^24}  {'MILP':^24}")
-    print(f"  {'-'*8}  {'-'*24}  {'-'*24}  {'-'*24}  {'-'*24}  {'-'*24}  {'-'*24}  {'-'*24}")
+    print(f"  {'Player':>8}  {'Lemke':^24}  {'Lemke-Dual':^24}  {'Log-IPM':^24}  {'Prox-ADMM':^24}  {'DR-DAQP':^24} {'MILP':^24}")
+    print(f"  {'-'*8}  {'-'*24}  {'-'*24}  {'-'*24}  {'-'*24}  {'-'*24}  {'-'*24}")
     for i in range(N):
         si, ei = i * n_p, (i + 1) * n_p
         xl = "  ".join(f"{v:6.3f}" for v in x_lemke[si:ei])
@@ -189,23 +177,21 @@ if n_p <= 3:
         xi = "  ".join(f"{v:6.3f}" for v in x_ipm[si:ei])
         xa = "  ".join(f"{v:6.3f}" for v in x_admm[si:ei])
         xd = "  ".join(f"{v:6.3f}" for v in x_dr_daqp[si:ei])
-        xg = "  ".join(f"{v:6.3f}" for v in x_goldnash[si:ei])
         xm = "  ".join(f"{v:6.3f}" for v in x_milp[si:ei])
-        print(f"  Player {i+1:2d}  [{xl}]  [{xld}]  [{xi}]  [{xa}]  [{xd}]  [{xg}]  [{xm}]")
+        print(f"  Player {i+1:2d}  [{xl}]  [{xld}]  [{xi}]  [{xa}]  [{xd}]  [{xm}]")
 
 print("\n  Objective values f_i(x*):")
-print(f"  {'Player':>8}  {'Lemke':>12}  {'Lemke-Dual':>12}  {'Log-IPM':>12}  {'Prox-ADMM':>12}  {'DR-DAQP':>12}  {'GoldNash':>12}  {'MILP':>12}")
-print(f"  {'-'*8}  {'-'*12}  {'-'*12}  {'-'*12}  {'-'*12}  {'-'*12}  {'-'*12}  {'-'*12}")
+print(f"  {'Player':>8}  {'Lemke':>12}  {'Lemke-Dual':>12}  {'Log-IPM':>12}  {'Prox-ADMM':>12}  {'DR-DAQP':>12}  {'MILP':>12}")
+print(f"  {'-'*8}  {'-'*12}  {'-'*12}  {'-'*12}  {'-'*12}  {'-'*12}  {'-'*12}")
 for i in range(N):
     fl = gnep_lemke.cost_eval(i, x_lemke)
     fld = gnep_lemke_dual.cost_eval(i, x_lemke_dual)
     fi = gnep_ipm.cost_eval(i, x_ipm)
     fa = gnep_admm.cost_eval(i, x_admm)
     fd = gnep_dr_daqp.cost_eval(i, x_dr_daqp)
-    fg = gnep_goldnash.cost_eval(i, x_goldnash)
     if solve_milp:
         fm = gnep_milp.cost_eval(i, x_milp)
     else:
         fm = float("nan")
-    print(f"  Player {i+1:2d}  {fl:+12.6f}  {fld:+12.6f}  {fi:+12.6f}  {fa:+12.6f}  {fd:+12.6f}  {fg:+12.6f}  {fm:+12.6f}")
+    print(f"  Player {i+1:2d}  {fl:+12.6f}  {fld:+12.6f}  {fi:+12.6f}  {fa:+12.6f}  {fd:+12.6f}  {fm:+12.6f}")
 

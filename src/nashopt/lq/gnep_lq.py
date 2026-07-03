@@ -16,7 +16,6 @@ from .prox_admm_gne import solve as solve_prox_admm
 from .lq_gnep_lemke import solve as solve_lemke
 from .log_ipm_gnep import solve as solve_log_ipm
 from .lemke_dual import solve as solve_lemke_dual
-from .goldnash import goldnash as solve_goldnash
 from .._common.report import check_equilibrium_common
 from .._common.optional_deps import add_box_constraints
 
@@ -110,7 +109,6 @@ class GNEP_LQ():
             - "highs" (default) mixed-integer programming solver
             - "gurobi" mixed-integer programming solver
             - "prox_admm" proximal ADMM algorithm (Borgens and Kanzow, 2021), only for variational non-parametric GNEPs
-            - "goldnash" GoldNash algorithm (Bemporad, 2026), only to attempt solving strongly-monotone variational non-parametric GNEPs. The solver may fail to find a solution in some rare cases. 
             - "lemke" Lemke's method for LCPs, only for variational non-parametric GNEPs with lower-bounded variables and no equality constraints.
             - "lemke_dual" Lemke's method applied on the dual reformulation of the KKT conditions of the game, only for variational non-parametric GNEPs. 
             - "log_ipm" logarithmic barrier interior point method, only for variational non-parametric GNEPs
@@ -270,7 +268,7 @@ class GNEP_LQ():
             npar = 0
 
         mip_solvers = ["highs", "gurobi"]
-        vgne_solvers = ["prox_admm", "goldnash", "lemke", "lemke_dual", "log_ipm", 'dr_daqp']
+        vgne_solvers = ["prox_admm", "lemke", "lemke_dual", "log_ipm", 'dr_daqp']
         solvers = mip_solvers + vgne_solvers
 
         solver = solver.lower()
@@ -926,7 +924,7 @@ class GNEP_LQ():
         
         MILP is used when no quadratic objective function is specified, otherwise MIQP is used (only Gurobi supported). 
         
-        Alternatively, if the solver specified is "goldnash", "prox_admm", "lemke", "lemke_dual", "log_ipm", or "dr_daqp", the corresponding algorithm is used to solve the variational GNEP without parameters (or with a fixed parameter) and without PWA or quadratic objective function. 
+        Alternatively, if the solver specified is "prox_admm", "lemke", "lemke_dual", "log_ipm", or "dr_daqp", the corresponding algorithm is used to solve the variational GNEP without parameters (or with a fixed parameter) and without PWA or quadratic objective function. 
 
         Parameters
         ----------
@@ -948,14 +946,6 @@ class GNEP_LQ():
                 gamma : proximal operator parameter
                 x0 : Initial guess for the ADMM iterations
 
-            For 'goldnash' solver, the following options are supported (see goldnash_gnep.py for details):
-                max_iter : int, maximum number of iterations
-                tol : float, stopping tolerance
-                verbose: bool, verbosity level
-                check_monotone: bool, if True check if game is strongly monotone,
-                refresh_freq: int, frequency to refresh incremental factorizationto limit numerical drift
-                use_numba: bool, if True use Numba-JIT kernels for incremental factorization updates
-                
             For 'log_ipm' solver, the following options are supported (see log_ipm_gnep.py for details):
                 eps : barrier-parameter convergence threshold  (mu <= eps)
                 tau : Newton-step norm threshold for inner termination
@@ -1220,28 +1210,6 @@ class GNEP_LQ():
                 t_lemke_dual = time.perf_counter() - t_lemke_dual
                 sol.elapsed_time = t_lemke_dual
 
-            elif self.solver == 'goldnash':
-                t_goldnash = time.perf_counter()
-                AA, bb = add_box_constraints(self.nvar, self.A, self.mip.b, self.lb, self.ub)
-                
-                x_goldnash, info_goldnash = solve_goldnash(self.mip.Q, self.mip.c, self.dim, A=AA, b=bb, E=self.mip.Aeq, f=self.mip.beq, **solver_options)
-                t_goldnash = time.perf_counter() - t_goldnash
-
-                sol = SimpleNamespace(
-                    x=x_goldnash, 
-                    lam=info_goldnash["lam"], 
-                    mu=info_goldnash["nu"],
-                    status_str=info_goldnash["status"],
-                    G=self.G, 
-                    Geq=self.Geq, 
-                    elapsed_time=t_goldnash,
-                    num_iters=info_goldnash["total_steps"], # number of inner-loop iterations
-                    info=info_goldnash)
-                info_goldnash.pop("nu", None)  # remove equality duals from info, they are stored in sol.mu
-                info_goldnash.pop("lam", None) # remove inequality duals from info, they are stored in sol.lam
-                info_goldnash.pop("status", None) # remove status from info, it's stored in sol.status_str
-                info_goldnash.pop("total_steps", None) # remove total_steps from info, it's stored in sol.num_iters
-                
             elif self.solver == 'log_ipm':
                 t_log_ipm = time.perf_counter()
                 Qi, p, S = self.transform_cost(self.mip.Q, self.mip.c)
