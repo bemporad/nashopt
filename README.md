@@ -257,13 +257,8 @@ To decide the nonlinear least-squares solver used to compute the GNEP, use the f
 sol = gnep.solve(x0, solver = "trf")
 ```
 
-or
-
-```python
-sol = gnep.solve(x0, solver = "lm")
-```
-
-where `trf` calls a trust-region reflective algorithm, while `lm` a Levenberg-Marquardt method.
+where `trf` calls a trust-region reflective algorithm. Other supported solvers are `lm` (Levenberg-Marquardt method)
+and `hybr` (modified Powell hybrid method, only applicable when the KKT residual has as many equations as unknowns as in unconstrained NE problems).
 
 ## Game Design
 

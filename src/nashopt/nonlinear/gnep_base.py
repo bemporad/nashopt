@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import time
 from jaxopt import ScipyBoundedMinimize
-from scipy.optimize import least_squares
+from scipy.optimize import least_squares, root
 from types import SimpleNamespace
 
 from .._common.report import eval_residual, check_equilibrium_common
@@ -348,11 +348,25 @@ class GNEP():
 
         return jnp.concatenate(res)
 
-    def solve(self, x0=None, max_nfev=200, tol=1e-12, solver="trf", verbose=1):
+    def solve(self, x0=None, max_nfev=200, tol=1e-12, solver=None, verbose=1):
         """ Solve the GNEP starting from initial guess x0.
 
-        The residuals of the KKT optimality conditions of all agents are minimized jointly as a 
-        nonlinear least-squares problem, solved via a Trust Region Reflective algorithm or Levenberg-Marquardt method. Strict complementarity is enforced via the Fischer–Burmeister NCP function. Variational GNEs are also supported by simply imposing equal Lagrange multipliers.
+        The KKT optimality conditions of all agents (with strict complementarity enforced
+        via the Fischer-Burmeister NCP function) are solved as a system of nonlinear
+        equations f(z)=0 via scipy.optimize.root (default), or as a nonlinear least-squares
+        problem via scipy.optimize.least_squares. Variational GNEs are also supported by
+        simply imposing equal Lagrange multipliers.
+
+        The KKT residual system is not always exactly square (#equations == #unknowns):
+            - Non-variational GNE with shared inequality constraints (g) and no shared
+              equality constraints (Aeq, h): exactly square.
+            - Variational GNE with shared inequality constraints and more than one agent:
+              mildly overdetermined (each agent duplicates the same, mutually consistent,
+              complementarity equation).
+            - Non-variational GNE with shared equality constraints (Aeq and/or h) and more
+              than one agent: underdetermined. Use variational=True, or solver="trf"/"dogbox",
+              in this case.
+            - Variational GNE with shared equality constraints only (no g): exactly square.
 
         Parameters:
         -----------
@@ -362,10 +376,28 @@ class GNEP():
             Maximum number of function evaluations.
         tol : float, optional
             Tolerance used for solver convergence.
-        solver : str, optional
-            Solver method used by scipy.optimize.least_squares: "lm" (Levenberg-Marquardt) or "trf" (Trust Region Reflective algorithm). Method "dogbox" is another option.
+        solver : str or None, optional
+            Which backend and method to use to solve the KKT residual system. If None
+            (default), automatically selects "hybr" when the KKT residual system is
+            square (#equations == #unknowns), or "trf" otherwise.
+                - "hybr": scipy.optimize.root with the modified Powell hybrid
+                  method. Requires the KKT residual to have exactly as many equations as
+                  unknowns (the square case above); raises an error otherwise.
+                - "lm": scipy.optimize.root with the Levenberg-Marquardt method (MINPACK).
+                  Tolerates a mildly overdetermined-but-consistent KKT residual, so it also
+                  works for variational GNEs with shared inequality constraints across
+                  multiple agents.
+                - "trf" or "dogbox": falls back to scipy.optimize.least_squares (Trust
+                  Region Reflective / dogbox algorithms), which minimizes the sum of squared
+                  residuals rather than solving for an exact root. Use one of these, or set
+                  variational=True, when the KKT system is underdetermined (e.g. a
+                  non-variational GNE with shared equality constraints Aeq/h and more than
+                  one agent).
         verbose : int, optional
-            Verbosity level (0: silent, 1: termination report, 2: progress (not supported by "lm")).
+            Verbosity level. 0: silent. 1: termination report. 2: live per-iteration
+            progress -- only supported for solver in {"trf", "dogbox"}; for solver in
+            {"hybr", "lm"}, scipy.optimize.root has no native per-iteration reporting, so
+            only the termination report is shown.
 
         Returns:
         --------
@@ -387,7 +419,8 @@ class GNEP():
         """
         t0 = time.perf_counter()
 
-        solver = solver.lower()
+        if solver is not None:
+            solver = solver.lower()
 
         if x0 is None:
             x0 = jnp.zeros(self.nvar)
@@ -400,15 +433,51 @@ class GNEP():
         else:
             z0 = x0
 
-        # Solve the KKT residual minimization problem via SciPy least_squares
+        # Solve the KKT residual system via SciPy root-finding (default) or least_squares
         f = jax.jit(self.kkt_residual)
         df = jax.jit(jax.jacobian(self.kkt_residual))
+
+        if solver is None:
+            # Auto-select: root-finding (hybr) if the KKT system is square, least-squares (trf) otherwise
+            solver = "hybr" if f(z0).shape[0] == z0.shape[0] else "trf"
+
+        if solver in ("hybr", "lm") and not self.variational and (self.neq > 0 or self.nh > 0) and self.N > 1:
+            print("\033[1;31mWarning: this GNEP has shared equality constraints (Aeq and/or h), "
+                  "is non-variational, and has more than one agent, so its KKT system is likely "
+                  "underdetermined for root-finding (solver='hybr'/'lm'). Consider setting "
+                  "variational=True, or use solver='trf' or solver='dogbox' instead.\033[0m")
+
         try:
-            solution = least_squares(f, z0, jac=df, method=solver, verbose=verbose,
-                                     ftol=tol, xtol=tol, gtol=tol, max_nfev=max_nfev)
+            if solver in ("hybr", "lm"):
+                if solver == "hybr":
+                    options = dict(xtol=tol, maxfev=max_nfev)
+                else:  # "lm"
+                    # root(method='lm')'s "maxiter" option is forwarded directly to
+                    # scipy.optimize.leastsq's `maxfev` (MINPACK lmdif/lmder) -- despite
+                    # the name, it caps function evaluations, same as max_nfev elsewhere.
+                    options = dict(ftol=tol, xtol=tol, gtol=tol, maxiter=max_nfev)
+                solution = root(f, z0, jac=df, method=solver, options=options)
+                if verbose > 0:
+                    color = "\033[1;32m" if solution.success else "\033[1;31m"
+                    print(f"{color}{solution.message}\033[0m")
+                if verbose > 1:
+                    print("\033[1;33mNote: verbose=2 live progress reporting is only available "
+                          "for solver in {'trf','dogbox'}; showing termination report only.\033[0m")
+            else:  # "trf" or "dogbox"
+                solution = least_squares(f, z0, jac=df, method=solver, verbose=verbose,
+                                         ftol=tol, xtol=tol, gtol=tol, max_nfev=max_nfev)
         except Exception as e:
-            raise RuntimeError(
-                f"Error in least_squares solver: {str(e)} If you are using 'lm', try using 'trf' instead.") from e
+            if solver in ("hybr", "lm"):
+                raise RuntimeError(
+                    f"Error in root solver (method='{solver}'): {str(e)} "
+                    "The KKT system may be non-square for this problem configuration "
+                    "(see solve() docstring). Try 'lm' if using 'hybr' (tolerates a mildly "
+                    "overdetermined system), or fall back to solver='trf'/'dogbox' if the "
+                    "system is underdetermined; consider also variational=True.") from e
+            else:
+                raise RuntimeError(
+                    f"Error in least_squares solver: {str(e)} If you are using 'lm', try using "
+                    "'trf' instead.") from e
         z_star = solution.x
         res = solution.fun
         kkt_evals = solution.nfev  # number of function evaluations
