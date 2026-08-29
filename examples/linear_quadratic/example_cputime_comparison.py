@@ -20,6 +20,8 @@ max_solutions = None
 max_size = 20
 cpu_time_milp_highs = []
 cpu_time_milp_gurobi = []
+cpu_time_qp = []
+cpu_time_extragrad = []
 cpu_time_admm = []
 cpu_time_lm = []
 cpu_time_lemke = []
@@ -27,12 +29,16 @@ cpu_time_log_ipm = []
 
 x_star_milp_highs = []
 x_star_milp_gurobi = []
+x_star_qp = []
+x_star_extragrad = []
 x_star_admm = []
 x_star_lm = []
 x_star_lemke = []
 x_star_log_ipm = []
 
 admm_iters = []
+qp_iters = []
+extragrad_iters = []
 lemke_iters = []
 log_ipm_iters = []
 
@@ -58,7 +64,7 @@ for N in range(2, max_size+1):
     def solve_gnep_lq(solver):
         gnep_lq = GNEP_LQ(sizes, Q, c, F=None, lb=lb, ub=ub, pmin=pmin,
                         pmax=pmax, A=A, b=b, S=None, M=1e4, 
-                        variational=True if solver in ['prox_admm','lemke','log_ipm'] else False, 
+                        variational=True if solver in ['qp_gnep','extragradient','prox_admm','lemke','log_ipm'] else False, 
                         solver=solver)
         sol = gnep_lq.solve(solver_options={'maxiter': 10000} if solver=='prox_admm' else None)
 
@@ -67,7 +73,11 @@ for N in range(2, max_size+1):
             cpu_time = 0.
         else:
             cpu_time = sol.elapsed_time
-            if solver == 'prox_admm' and not isinstance(sol, list):
+            if solver == 'qp_gnep' and not isinstance(sol, list):
+                qp_iters.append(sol.num_iters)
+            if solver == 'extragradient' and not isinstance(sol, list):
+                extragrad_iters.append(sol.num_iters)
+            elif solver == 'prox_admm' and not isinstance(sol, list):
                 admm_iters.append(sol.num_iters)
             elif solver == 'lemke' and not isinstance(sol, list):
                 lemke_iters.append(sol.num_iters)
@@ -78,12 +88,16 @@ for N in range(2, max_size+1):
 
     cpu_time_milp_highs.append(solve_gnep_lq('highs')[0])
     cpu_time_milp_gurobi.append(solve_gnep_lq('gurobi')[0])
+    cpu_time_qp.append(solve_gnep_lq('qp_gnep')[0])
+    cpu_time_extragrad.append(solve_gnep_lq('extragradient')[0])
     cpu_time_admm.append(solve_gnep_lq('prox_admm')[0])
     cpu_time_lemke.append(solve_gnep_lq('lemke')[0])
     cpu_time_log_ipm.append(solve_gnep_lq('log_ipm')[0])
     
     x_star_milp_highs.append(solve_gnep_lq('highs')[1])
     x_star_milp_gurobi.append(solve_gnep_lq('gurobi')[1])
+    x_star_qp.append(solve_gnep_lq('qp_gnep')[1])
+    x_star_extragrad.append(solve_gnep_lq('extragradient')[1])
     x_star_admm.append(solve_gnep_lq('prox_admm')[1])
     x_star_lemke.append(solve_gnep_lq('lemke')[1])
     x_star_log_ipm.append(solve_gnep_lq('log_ipm')[1])
@@ -104,6 +118,8 @@ for N in range(2, max_size+1):
     cpu_time_lm.append(stats_vgne.elapsed_time)
     x_star_lm.append(x_star_vgne)
 
+print("Iterations required by QP-GNEP: min =", min(qp_iters), ", max =", max(qp_iters))
+print("Iterations required by Extragradient: min =", min(extragrad_iters), ", max =", max(extragrad_iters))
 print("Iterations required by Proximal ADMM: min =", min(admm_iters), ", max =", max(admm_iters))
 print("Iterations required by Lemke's algorithm: min =", min(lemke_iters), ", max =", max(lemke_iters))
 print("Iterations required by Logarithmic IPM: min =", min(log_ipm_iters), ", max =", max(log_ipm_iters))
@@ -115,17 +131,21 @@ ax1.semilogy(range(2, max_size+1), cpu_time_milp_highs,
              color=colors[0], linewidth=4, label='MILP - HiGHS')
 ax1.semilogy(range(2, max_size+1), cpu_time_milp_gurobi,
              color=colors[1], linewidth=4, label='MILP - Gurobi')
+ax1.semilogy(range(2, max_size+1), cpu_time_qp,
+             color=colors[2], linewidth=4, label='QP-GNEP')
+ax1.semilogy(range(2, max_size+1), cpu_time_extragrad,
+             color=colors[7], linewidth=4, label='Extragradient')
 ax1.semilogy(range(2, max_size+1), cpu_time_admm,
-             color=colors[2], linewidth=4, label='Prox-ADMM')
+             color=colors[3], linewidth=4, label='Prox-ADMM')
 ax1.semilogy(range(2, max_size+1), cpu_time_lm,
-             color=colors[3], linewidth=4, label='LM')
+             color=colors[4], linewidth=4, label='LM')
 ax1.semilogy(range(2, max_size+1), cpu_time_lemke,
-             color=colors[4], linewidth=4, label='Lemke')
+             color=colors[5], linewidth=4, label='Lemke')
 ax1.semilogy(range(2, max_size+1), cpu_time_log_ipm,
-             color=colors[5], linewidth=4, label='Log-IPM')
+             color=colors[6], linewidth=4, label='Log-IPM')
 ax1.set_xlabel(r'number $N$ of agents')
 ax1.set_ylabel(r'CPU time (s)')
-ax1.legend(loc='lower right')
+ax1.legend(loc='upper left', fontsize=10)
 plt.grid()
 plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
 plt.show()

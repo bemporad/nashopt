@@ -16,6 +16,8 @@ from .prox_admm_gne import solve as solve_prox_admm
 from .lq_gnep_lemke import solve as solve_lemke
 from .log_ipm_gnep import solve as solve_log_ipm
 from .lemke_dual import solve as solve_lemke_dual
+from .qp_gnep import qp_gnep
+from .extragrad_gnep import extragradient_gnep
 from .._common.report import check_equilibrium_common
 from .._common.optional_deps import add_box_constraints
 
@@ -43,6 +45,9 @@ class GNEP_LQ():
 
         or the sum of both. Here, x = [x_1; x_2; ...; x_N] is the stacked vector of all agents' variables,
         p is a vector of parameters (possibly empty), and Qi, c_i, F_i are the cost function data for agent i.
+        
+        NOTE: each agent's cost matrix Qi is symmetrized to (Qi + Qi^T)/2 before solving the problem.
+        The game-design cost matrix Q_J is also symmetrized to (Q_J + Q_J^T)/2 before solving the problem.
 
         Special cases of the general problem are:
         1) If p is empty and f(x,p)=0, we simply look for a generalized Nash equilibrium of the linear
@@ -64,7 +69,7 @@ class GNEP_LQ():
         dim : list of int
             List with number of variables for each agent.
         Q : list of (nx, nx) np.ndarray
-            Q matrices for each agent.
+            Q matrices for each agent. Each Q[i] is symmetrized to (Q[i] + Q[i].T)/2 before solving the problem.
         c : list of (nx,) np.ndarray
             c vectors for each agent.
         F : list of (nx, np) np.ndarray or None
@@ -96,7 +101,7 @@ class GNEP_LQ():
         h_pwa : (list of) (nf,) np.ndarray(s) or None
             Vector defining the convex PWA objective function for designing the game. 
         Q_J : (nx+npar, nx+npar) np.ndarray or None
-            Hessian matrix defining the convex quadratic objective function for designing the game. If None, no quadratic objective function is used.
+            Hessian matrix defining the convex quadratic objective function for designing the game. If None, no quadratic objective function is used. Symmetrized to (Q_j+ Q_j.T)/2 before solving the problem.
         c_J : (nx+npar,) np.ndarray or None
             Linear term of the convex quadratic objective function for designing the game.
         M   : float
@@ -108,12 +113,15 @@ class GNEP_LQ():
             Solver used to solve the GNE:
             - "highs" (default) mixed-integer programming solver
             - "gurobi" mixed-integer programming solver
+            - "qp_gnep" quadratic programming solver for variational non-parametric GNEPs (Bemporad, Tatarenko, 2026, arXiv 2608.07336)
+            - "extragradient" Korpelevich's Extragradient method for variational non-parametric GNEPs (Korpelevich, 1976), 
+               using DAQP for evaluating projections (Bemporad, Tatarenko, 2026, arXiv 2608.07336)
             - "prox_admm" proximal ADMM algorithm (Borgens and Kanzow, 2021), only for variational non-parametric GNEPs
             - "lemke" Lemke's method for LCPs, only for variational non-parametric GNEPs with lower-bounded variables and no equality constraints.
             - "lemke_dual" Lemke's method applied on the dual reformulation of the KKT conditions of the game, only for variational non-parametric GNEPs. 
             - "log_ipm" logarithmic barrier interior point method, only for variational non-parametric GNEPs
             - "dr_daqp" Douglas-Rachford operator splitting with an active-set acceleration strategy (Arnstrom, Benenati, Belgioioso, 2026). See https://darnstrom.github.io/daqp/start/advanced/avi.
-            Only for strongly-monotone variational non-parametric GNEPs. Usually the fastest method.
+            Only for strongly-monotone variational non-parametric GNEPs. 
 
         (C) 2025-2026 Alberto Bemporad
         """
@@ -268,7 +276,7 @@ class GNEP_LQ():
             npar = 0
 
         mip_solvers = ["highs", "gurobi"]
-        vgne_solvers = ["prox_admm", "lemke", "lemke_dual", "log_ipm", 'dr_daqp']
+        vgne_solvers = ["qp_gnep", "extragradient", "prox_admm", "lemke", "lemke_dual", "log_ipm", 'dr_daqp']
         solvers = mip_solvers + vgne_solvers
 
         solver = solver.lower()
@@ -938,6 +946,24 @@ class GNEP_LQ():
             For 'highs' and 'gurobi' solvers, the following options are supported:
                 time_limit : Time limit in seconds
                 mip_gap : Relative MIP gap tolerance
+                
+            For 'qp_gnep' solver, the following options are supported (see qp_gnep.py for details):
+                proximal : Use proximal regularization
+                solver : Solver to use
+                rho : Proximal regularization parameter (only used when proximal=True)
+                tol : stopping tolerance. Stop when (lambda^k)'(A x^k - b) < tol (only used when proximal=True)
+                maxiter : Maximum number of proximal iterations 
+                hessian_reg : Hessian regularization (only used when proximal=False)
+                reduced : Use reduced formulation by eliminating variables x_i and dual vars of eq. constraints 
+                anderson : Use Anderson acceleration (only used when proximal=True)
+                guler : Use Guler's acceleration (only used when proximal=True)
+                
+            For 'extragradient' solver, the following options are supported (see extragrad_gnep.py for details):
+                tol : stopping tolerance. Stop when gap(x) = max_{z in X} F(x)^T (x - z) < tol
+                maxiter : Maximum number of extragradient iterations
+                alpha: Step size for the extragradient iterations
+                x0: Initial guess for the extragradient iterations (projected to X if infeasible)
+                get_lambda: If True, return the Lagrange multipliers for the shared inequality constraints
 
             For 'prox_admm' solver, the following options are supported (see prox_admm_gne.py for details):
                 maxiter : Maximum number of ADMM iterations
@@ -1168,7 +1194,19 @@ class GNEP_LQ():
             if solver_options is None:
                 solver_options = {}
             
-            if self.solver == 'prox_admm':
+            if self.solver == 'qp_gnep':
+                t_qp = time.perf_counter()            
+                sol = qp_gnep(self.dim, self.mip.Q, self.mip.c, self.A, self.mip.b, lb=self.lb, ub=self.ub, Aeq=self.mip.Aeq, beq=self.mip.beq, verbose=verbose, **solver_options)
+                t_qp = time.perf_counter() - t_qp
+                sol.elapsed_time = t_qp
+                
+            elif self.solver == 'extragradient':
+                t_extragrad = time.perf_counter()            
+                sol = extragradient_gnep(self.dim, self.mip.Q, self.mip.c, self.A, self.mip.b, lb=self.lb, ub=self.ub, Aeq=self.mip.Aeq, beq=self.mip.beq, verbose=verbose, **solver_options)
+                t_extragrad = time.perf_counter() - t_extragrad
+                sol.elapsed_time = t_extragrad
+
+            elif self.solver == 'prox_admm':
                 t_admm = time.perf_counter()
                 # Check if solver_options has the required options for the ADMM algorithm, and set defaults if not provided.
                 if "x0" not in solver_options:
