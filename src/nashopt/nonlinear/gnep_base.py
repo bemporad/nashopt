@@ -348,7 +348,7 @@ class GNEP():
 
         return jnp.concatenate(res)
 
-    def solve(self, x0=None, max_nfev=200, tol=1e-12, solver=None, verbose=1):
+    def solve(self, x0=None, max_nfev=200, tol=1e-12, solver=None, verbose=1, extragrad_opts=None):
         """ Solve the GNEP starting from initial guess x0.
 
         The KKT optimality conditions of all agents (with strict complementarity enforced
@@ -377,27 +377,37 @@ class GNEP():
         tol : float, optional
             Tolerance used for solver convergence.
         solver : str or None, optional
-            Which backend and method to use to solve the KKT residual system. If None
-            (default), automatically selects "hybr" when the KKT residual system is
-            square (#equations == #unknowns), or "trf" otherwise.
-                - "hybr": scipy.optimize.root with the modified Powell hybrid
-                  method. Requires the KKT residual to have exactly as many equations as
+            Which backend and method to use to find the GNE. If None
+            (default), automatically solve the KKT residual system with method "hybr" when the KKT residual system is square (#equations == #unknowns), or "trf" otherwise.
+                - "hybr": solve the KKT residual system via scipy.optimize.root with the modified   
+                  Powell hybrid method. Requires the KKT residual to have exactly as many equations as
                   unknowns (the square case above); raises an error otherwise.
-                - "lm": scipy.optimize.root with the Levenberg-Marquardt method (MINPACK).
-                  Tolerates a mildly overdetermined-but-consistent KKT residual, so it also
+                - "lm": solve the KKT residual system via scipy.optimize.root with the
+                  Levenberg-Marquardt method (MINPACK). Tolerates a mildly overdetermined-but-consistent KKT residual, so it also
                   works for variational GNEs with shared inequality constraints across
                   multiple agents.
-                - "trf" or "dogbox": falls back to scipy.optimize.least_squares (Trust
+                - "trf" or "dogbox": solve the KKT residual system falling back to scipy.optimize.least_squares (Trust
                   Region Reflective / dogbox algorithms), which minimizes the sum of squared
                   residuals rather than solving for an exact root. Use one of these, or set
                   variational=True, when the KKT system is underdetermined (e.g. a
                   non-variational GNE with shared equality constraints Aeq/h and more than
                   one agent).
+                - "extragrad": use Korpelevich's extragradient method (nashopt.nonlinear.
+                  extragrad_nlgnep), which targets the variational GNE directly (feasibility
+                  is enforced via projections rather than KKT multipliers) and does not
+                  require the KKT residual to be square. Use extragrad_opts to configure it.
         verbose : int, optional
             Verbosity level. 0: silent. 1: termination report. 2: live per-iteration
             progress -- only supported for solver in {"trf", "dogbox"}; for solver in
             {"hybr", "lm"}, scipy.optimize.root has no native per-iteration reporting, so
-            only the termination report is shown.
+            only the termination report is shown. For solver="extragrad", per-iteration
+            progress is shown at verbose=2 unless overridden by extragrad_opts['verbose'].
+        extragrad_opts : dict or None, optional
+            Only used when solver="extragrad". Dictionary of keyword arguments forwarded
+            to extragrad_nlgnep(gnep, ...): tol, maxiter, alpha, x0, verbose,
+            projection_solver, rho. If a given field is not provided, extragrad_nlgnep's
+            own default is used (x0 falls back to this method's x0 argument, and verbose
+            falls back to verbose>1). See extragrad_nlgnep's docstring for details.
 
         Returns:
         --------
@@ -421,6 +431,10 @@ class GNEP():
 
         if solver is not None:
             solver = solver.lower()
+
+        if solver == "extragrad":
+            from .nl_extragrad import solve_extragrad
+            return solve_extragrad(self, x0=x0, extragrad_opts=extragrad_opts, verbose=verbose)
 
         if x0 is None:
             x0 = jnp.zeros(self.nvar)

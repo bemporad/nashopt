@@ -251,7 +251,7 @@ To compute a **variational GNE** solution, set flag `variational` = `True`:
 gnep = GNEP( ... , variational=True)
 ```
 
-To decide the nonlinear least-squares solver used to compute the GNEP, use the following call:
+By default, a nonlinear least-squares solver is used to compute the GNEP by minimizing the KKT residual. Use the following to specify the solver to use:
 
 ```python
 sol = gnep.solve(x0, solver = "trf")
@@ -259,6 +259,13 @@ sol = gnep.solve(x0, solver = "trf")
 
 where `trf` calls a trust-region reflective algorithm. Other supported solvers are `lm` (Levenberg-Marquardt method)
 and `hybr` (modified Powell hybrid method, only applicable when the KKT residual has as many equations as unknowns as in unconstrained NE problems).
+
+In alternative, for variational GNE you can use Korpelevich's Extragradient Method (Korpelevich 1976):
+
+```python
+sol = gnep.solve(x0, solver = "extragrad", extragrad_opts=extragrad_opts)
+```
+
 
 ## Game Design
 
