@@ -335,7 +335,7 @@ def extragrad_nlgnep(
     )
 
 
-def solve_extragrad(gnep, x0=None, extragrad_opts=None, verbose=1):
+def solve_extragrad(gnep, x0=None, solver_opts=None, verbose=1):
     """
     Solve the variational GNE of a nonlinear GNEP via Korpelevich's extragradient
     method (extragrad_nlgnep above), returning a solution object with the same
@@ -348,16 +348,16 @@ def solve_extragrad(gnep, x0=None, extragrad_opts=None, verbose=1):
         extragradient method targets the variational GNE, so gnep should
         normally be constructed with variational=True.
     x0 : array-like or None
-        Initial guess for the Nash equilibrium x. Used only if extragrad_opts
+        Initial guess for the Nash equilibrium x. Used only if solver_opts
         does not itself provide 'x0'.
-    extragrad_opts : dict or None
+    solver_opts : dict or None
         Keyword arguments forwarded to extragrad_nlgnep(gnep, ...): tol,
         maxiter, alpha, x0, verbose, projection_solver, rho. See
         extragrad_nlgnep's docstring for details. If None, extragrad_nlgnep's
         own defaults are used.
     verbose : int, optional
         Verbosity level. 0: silent. >0: termination report. Used only if
-        extragrad_opts does not itself specify 'verbose' (in which case that
+        solver_opts does not itself specify 'verbose' (in which case that
         value is passed through to extragrad_nlgnep for per-iteration
         reporting).
 
@@ -379,7 +379,7 @@ def solve_extragrad(gnep, x0=None, extragrad_opts=None, verbose=1):
         print("\033[1;33mWarning: solver='extragrad' targets the variational GNE, but "
               "the GNEP was not constructed with variational=True.\033[0m")
 
-    opts = dict(extragrad_opts) if extragrad_opts is not None else {}
+    opts = dict(solver_opts) if solver_opts is not None else {}
     opts.setdefault("x0", x0)
     opts.setdefault("verbose", verbose > 1)
 

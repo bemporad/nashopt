@@ -348,7 +348,7 @@ class GNEP():
 
         return jnp.concatenate(res)
 
-    def solve(self, x0=None, max_nfev=200, tol=1e-12, solver=None, verbose=1, extragrad_opts=None):
+    def solve(self, x0=None, max_nfev=200, tol=1e-12, solver=None, verbose=1, solver_opts=None):
         """ Solve the GNEP starting from initial guess x0.
 
         The KKT optimality conditions of all agents (with strict complementarity enforced
@@ -393,21 +393,36 @@ class GNEP():
                   non-variational GNE with shared equality constraints Aeq/h and more than
                   one agent).
                 - "extragrad": use Korpelevich's extragradient method (nashopt.nonlinear.
-                  extragrad_nlgnep), which targets the variational GNE directly (feasibility
-                  is enforced via projections rather than KKT multipliers) and does not
-                  require the KKT residual to be square. Use extragrad_opts to configure it.
+                  nl_extragrad.extragrad_nlgnep), which targets the variational GNE directly
+                  (feasibility is enforced via projections rather than KKT multipliers) and
+                  does not require the KKT residual to be square. Use solver_opts to
+                  configure it.
+                - "golden_ratio": use the adaptive Golden Ratio Algorithm (nashopt.nonlinear.
+                  golden_ratio.golden_ratio) on the primal-dual lifting of the variational
+                  GNE. Supports shared inequality constraints (g) and box constraints
+                  (lb, ub) only (no Aeq/h). Use solver_opts to configure it.
+                - "op_extrapolation": use the Operator Extrapolation method (nashopt.
+                  nonlinear.op_extrapolation.op_extrapolation) applied directly to the
+                  original (non-lifted) variational GNE problem. Supports shared inequality
+                  constraints (g) and box constraints (lb, ub) only (no Aeq/h). Use
+                  solver_opts to configure it.
         verbose : int, optional
             Verbosity level. 0: silent. 1: termination report. 2: live per-iteration
             progress -- only supported for solver in {"trf", "dogbox"}; for solver in
             {"hybr", "lm"}, scipy.optimize.root has no native per-iteration reporting, so
-            only the termination report is shown. For solver="extragrad", per-iteration
-            progress is shown at verbose=2 unless overridden by extragrad_opts['verbose'].
-        extragrad_opts : dict or None, optional
-            Only used when solver="extragrad". Dictionary of keyword arguments forwarded
-            to extragrad_nlgnep(gnep, ...): tol, maxiter, alpha, x0, verbose,
-            projection_solver, rho. If a given field is not provided, extragrad_nlgnep's
-            own default is used (x0 falls back to this method's x0 argument, and verbose
-            falls back to verbose>1). See extragrad_nlgnep's docstring for details.
+            only the termination report is shown. For solver in {"extragrad", "golden_ratio",
+            "op_extrapolation"}, per-iteration progress is shown at verbose=2 unless
+            overridden by solver_opts['verbose'].
+        solver_opts : dict or None, optional
+            Only used when solver is one of {"extragrad", "golden_ratio",
+            "op_extrapolation"}. Dictionary of keyword arguments forwarded to the
+            underlying method: extragrad_nlgnep(gnep, ...) (tol, maxiter, alpha, x0,
+            verbose, projection_solver, rho), golden_ratio(gnep, ...) (x1, lam1, x0, lam0,
+            theta0, theta_bar, max_iter, tol, stopping, verbose), or op_extrapolation(gnep,
+            ...) (x1, L, mu, safety, max_iter, tol, stopping, check_every, verbose). If a
+            given field is not provided, the underlying method's own default is used (its
+            initial-iterate field falls back to this method's x0 argument, and verbose
+            falls back to 2 if verbose>1 else 0). See each method's docstring for details.
 
         Returns:
         --------
@@ -425,6 +440,9 @@ class GNEP():
                     - finite upper bounds for agent i
                     - shared linear equality constraints
                     - shared nonlinear equality constraints
+                For solver="extragrad" or "op_extrapolation" (multiplier-free methods),
+                lam is an empty list. For solver="golden_ratio", lam is the shared
+                inequality multiplier lambda_g* (ndarray, not a per-agent list).
             stats : Statistics about the optimization result.
         """
         t0 = time.perf_counter()
@@ -434,7 +452,15 @@ class GNEP():
 
         if solver == "extragrad":
             from .nl_extragrad import solve_extragrad
-            return solve_extragrad(self, x0=x0, extragrad_opts=extragrad_opts, verbose=verbose)
+            return solve_extragrad(self, x0=x0, solver_opts=solver_opts, verbose=verbose)
+
+        if solver == "golden_ratio":
+            from .golden_ratio import solve_golden_ratio
+            return solve_golden_ratio(self, x0=x0, solver_opts=solver_opts, verbose=verbose)
+
+        if solver == "op_extrapolation":
+            from .op_extrapolation import solve_op_extrapolation
+            return solve_op_extrapolation(self, x0=x0, solver_opts=solver_opts, verbose=verbose)
 
         if x0 is None:
             x0 = jnp.zeros(self.nvar)

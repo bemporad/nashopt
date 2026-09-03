@@ -260,10 +260,13 @@ sol = gnep.solve(x0, solver = "trf")
 where `trf` calls a trust-region reflective algorithm. Other supported solvers are `lm` (Levenberg-Marquardt method)
 and `hybr` (modified Powell hybrid method, only applicable when the KKT residual has as many equations as unknowns as in unconstrained NE problems).
 
-In alternative, for variational GNE you can use Korpelevich's Extragradient Method (Korpelevich 1976):
+In alternative, for variational GNE you can use Korpelevich's Extragradient Method (Korpelevich 1976),
+the adaptive Golden Ratio Algorithm (Malitsky 2019), or the Operator Extrapolation method (Kotsalis, Lan and Li 2023):
 
 ```python
-sol = gnep.solve(x0, solver = "extragrad", extragrad_opts=extragrad_opts)
+sol = gnep.solve(x0, solver = "extragrad", solver_opts=solver_opts)
+sol = gnep.solve(x0, solver = "golden_ratio", solver_opts=solver_opts)
+sol = gnep.solve(x0, solver = "op_extrapolation", solver_opts=solver_opts)
 ```
 
 
