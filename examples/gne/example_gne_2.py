@@ -34,7 +34,7 @@ gnep = GNEP(sizes, f=f, lb=lb, ub=ub)
 
 np.set_printoptions(precision=4, suppress=True)
 
-x0 = jnp.zeros(nvar)
+x0 = (lb+ub)/2.
 
 # --- 1) Solve via the default KKT-based solver ---
 print("Solving GNEP with N =", N, "agents (default KKT solver) ... ", end="")
@@ -68,8 +68,11 @@ L = np.linalg.norm(np.asarray(jax.jacobian(pseudogradient)(jnp.asarray(xref))), 
 alpha = 0.99 / L
 
 print("\nSolving GNEP with N =", N, "agents (extragradient method) ... ", end="")
+
+projection_solver = "trf" # usually faster than "ipopt"
+# projection_solver = "ipopt" 
 sol_eg = gnep.solve(x0, solver="extragrad", verbose=0,
-                     extragrad_opts={"tol": 1e-9, "maxiter": 5000, "alpha": alpha})
+                     extragrad_opts={"tol": 1e-9, "maxiter": 5000, "alpha": alpha, "projection_solver": projection_solver})
 x_star_eg, stats_eg = sol_eg.x, sol_eg.stats
 print("done.")
 
