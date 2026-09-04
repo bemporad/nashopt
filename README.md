@@ -422,6 +422,8 @@ For the special case of strongly-monotone variational GNEs and fixed parameter $
 - `solver='lemke_dual'`: Lemke's method applied to a dual reformulation of the KKT conditions
 - `solver='log_ipm'`: log-domain interior point method <a href="#ref4">[4]</a>
 - `solver='dr_daqp'`: DR-DAQP hybrid operator-splitting / active-set solver <a href="#ref5">[5]</a>
+- `solver='op_extrap'`: Kotsalis-Lan-Li operator extrapolation method, only for strongly-monotone games <a href="#ref8">[8]</a>
+- `solver='extragradient'`: Korpelevich's Extragradient method (Korpelevich, 1976)
 
 `dr_daqp` is usually the fastest solver.
 
@@ -564,6 +566,8 @@ sol = nash_mpc.solve(..., bc = bc)
 
 > <a id="ref6"></a>[6] B. Nortman, A. Monti, M. Sassano, T. Mylvaganam, "Nash Equilibria for Linear Quadratic
 Discrete-Time Dynamic Games via Iterative and Data-Driven Algorithms," IEEE Trans. Autom. Contr., vol. 69, no. 10, October 2024.
+
+> <a id="ref8"></a>[8] G. Kotsalis, G. Lan, T. Li, "Simple and Optimal Methods for Stochastic Variational Inequalities, I: Operator Extrapolation," SIAM Journal on Optimization, vol. 32, no. 3, pp. 2041-2073, 2022.
 
 ## Citation
 

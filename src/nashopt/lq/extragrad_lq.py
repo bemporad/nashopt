@@ -15,10 +15,19 @@ Algorithm (Korpelevich 1976):
     y^k     = P_X(x^k - alpha * F(x^k))
     x^{k+1} = P_X(x^k - alpha * F(y^k))
 
+where P_X is the projection onto the feasible set X.
 Step-size condition for convergence: alpha < 1 / spectral_norm(G).
 DAQP is used for each projection, with active-set warm-starting between steps.
 
-[1] A. Bemporad, T. Tatarenko, "Solving Monotone Linear-Quadratic Generalized Nash Equilibrium Problems via Quadratic Programming," arXiv preprint 2608.07336, 2026
+This module mirrors operator_extrapolation.py's `stopping`/`check_every` options:
+"step" (default) stops on the cheap ||x^{k+1}-x^k|| proxy; "residual" stops on the
+natural-map residual r_alpha(x) = (x - y^k)/alpha -- for extragradient this comes
+for FREE, since y^k = P_X(x^k - alpha*F(x^k)) is already computed as the method's
+own first half-step, unlike operator_extrapolation's own "residual" mode which
+needs one extra projection; "gap" stops on gap(x) = max_{z in X} F(x)^T (x-z),
+computed by solving an LP each check.
+
+[1] G.M. Korpelevich, "The extragradient method for finding saddle points and other problems," Matecon, vol. 12, pp. 747-756, 1976.
 
 (C) 2026 A. Bemporad
 """
@@ -30,7 +39,8 @@ import daqp
 
 def extragradient_gnep(
     dim, Q, c, A=None, b=None, lb=None, ub=None, Aeq=None, beq=None,
-    tol=1e-8, maxiter=1000, alpha=None, x0=None, verbose=False, get_lambda=False
+    tol=1e-8, maxiter=1000, alpha=None, x0=None, stopping="step", check_every=1,
+    verbose=False, get_lambda=False
 ):
     """
     Korpelevich extragradient method for variational GNE of a LQ game.
@@ -56,13 +66,31 @@ def extragradient_gnep(
     beq : ndarray (q,), optional
         Shared equality RHS.
     tol : float
-        Stop when gap(x) = max_{z in X} F(x)^T (x - z) < tol.
+        Stopping tolerance (meaning depends on `stopping`).
     maxiter : int
         Maximum iterations.
     alpha : float, optional
         Step size. Default: 0.99 / spectral_norm(G).
     x0 : ndarray (nvar,), optional
         Initial point (projected to X if infeasible). Default: zeros.
+    stopping : str
+        "step" (default): stop when ||x^{k+1}-x^k|| <= tol -- cheap (no extra
+        projection or LP solve), but only an indirect proxy for optimality.
+        "residual": stop when the natural-map residual
+            r_alpha(x^k) := (x^k - y^k) / alpha
+        satisfies ||r_alpha(x^k)|| <= tol, where y^k = P_X(x^k - alpha*F(x^k))
+        is already computed as the method's own first half-step -- so, unlike
+        operator_extrapolation_gnep's "residual" mode, this costs NOTHING
+        extra. r_alpha(x) = 0 if and only if x solves the VI, so this is a
+        genuine first-order optimality measure.
+        "gap": stop when gap(x) = max_{z in X} F(x)^T (x - z) <= tol, computed
+        by solving an LP each check. NOT recommended when X is
+        unbounded: the LP can then be unbounded.
+    check_every : int
+        Only used when stopping in ("residual", "gap"): evaluate the (extra,
+        for "gap") check every `check_every` iterations rather than every
+        iteration, to amortize its cost. The step-based ||x^{k+1}-x^k|| is
+        still tracked every iteration regardless of `stopping`.
     verbose : bool
         Print per-iteration residuals.
     get_lambda : bool
@@ -72,13 +100,26 @@ def extragradient_gnep(
     Returns
     -------
     SimpleNamespace with fields:
-        x            : ndarray -- approximate variational GNE
-        elapsed_time : float   -- wall-clock seconds (excluding setup)
-        status_str   : str     -- 'converged' or 'max_iterations_reached'
-        num_iters    : int     -- iterations performed
-        info         : dict    -- {'converged': bool, 'final_gap': float}
+        x              : ndarray -- approximate variational GNE
+        elapsed_time   : float   -- wall-clock seconds (excluding setup)
+        status_str     : str     -- 'converged' or 'max_iterations_reached'
+        num_iters      : int     -- iterations performed
+        num_daqp_iters : int     -- total lower-level DAQP active-set iterations
+                         spent across every DAQP solve() call of this run (the
+                         two projections per outer iteration, any "gap" checks,
+                         and the final get_lambda LP if requested), including
+                         any cold-start retries
+        info           : dict    -- {'converged': bool, 'final_gap': float
+                         (final "step"/"residual"/"gap" check value, whichever
+                         `stopping` used), 'alpha': float, 'stopping': str}
+        history        : dict    -- {'step': [...] (every iteration), 'check':
+                         [...] (every `check_every` iterations when stopping in
+                         ("residual", "gap"), empty when stopping="step")}
     """
     import time
+
+    if stopping not in ("step", "residual", "gap"):
+        raise ValueError("stopping must be 'step', 'residual', or 'gap'.")
 
     N = len(dim)
     nvar = sum(dim)
@@ -144,28 +185,34 @@ def extragradient_gnep(
 
     Q_lp = np.zeros((nvar, nvar), dtype=np.float64)
 
+    total_daqp_iters = 0
+
+    def _daqp_solve(*args, **kwargs):
+        """daqp.solve wrapper that accumulates DAQP's own reported active-set
+        iteration count (report["iterations"]) across every call this run
+        makes -- i.e. the actual lower-level active-set work done, as opposed
+        to the number of outer iterations of this function."""
+        nonlocal total_daqp_iters
+        x_sol, y_sol, flag, report = daqp.solve(*args, **kwargs)
+        if isinstance(report, dict):
+            total_daqp_iters += int(report.get("iterations", 0))
+        return x_sol, y_sol, flag, report
+
     def compute_gap(x, Fx):
-        if 1:
-            # gap(x) = max_{z in X} F(x)^T (x - z) = F(x)^T x - min_{z in X} F(x)^T z
-            z, _, flag, _ = daqp.solve(Q_lp, np.asarray(Fx, dtype=np.float64),
-                                    AA_d, bu_d, bl_d, sense=sense_base.copy())
-            return float(Fx @ x) - float(Fx @ z) if flag == 1 else np.inf
-        else:
-            # Minty gap(x) = max_{z in X} F(z)^T (x - z) = - min_{z in X} F(z)^T (z - x)
-            # where F(z) = G z + r, so we solve min_{z in X} (G z + r)^T (z - x)
-            z, _, flag, _ = daqp.solve(G_mat+G_mat.T, np.asarray(r_vec - G_mat @ x, dtype=np.float64),
-                                    AA_d, bu_d, bl_d, sense=sense_base.copy())
-            return float((G_mat @ x + r_vec) @ (x - z)) if flag == 1 else np.inf
-        
+        # gap(x) = max_{z in X} F(x)^T (x - z) = F(x)^T x - min_{z in X} F(x)^T z
+        z, _, flag, _ = _daqp_solve(Q_lp, np.asarray(Fx, dtype=np.float64),
+                                AA_d, bu_d, bl_d, sense=sense_base.copy())
+        return float(Fx @ x) - float(Fx @ z) if flag == 1 else np.inf
+
     def project(y, sense_ws):
         """Project y onto X; return (projected_point, updated_sense)."""
         c_proj = -np.asarray(y, dtype=np.float64)
-        x_p, _, flag, report = daqp.solve(
+        x_p, _, flag, report = _daqp_solve(
             Q_proj, c_proj, AA_d, bu_d, bl_d, sense=sense_ws.copy()
         )
         if flag != 1:
             # warm-start failed -- retry cold
-            x_p, _, flag, report = daqp.solve(
+            x_p, _, flag, report = _daqp_solve(
                 Q_proj, c_proj, AA_d, bu_d, bl_d, sense=sense_base.copy()
             )
         lam = report["lam"] if (flag == 1 and "lam" in report) else np.zeros(ncon_d)
@@ -183,33 +230,52 @@ def extragradient_gnep(
 
     t_start = time.perf_counter()
     status_str = "max_iterations_reached"
-    gap = np.nan
+    check_norm = np.nan
+
+    history_step, history_check = [], []
     k = -1
 
     for k in range(maxiter):
         Fx = G_mat @ x + r_vec
-        gap = compute_gap(x, Fx)
 
-        if verbose:
-            print(f"  extragradient iter {k+1}: gap={gap:.3e}")
-
-        if gap < tol:
-            status_str = "converged"
-            break
-
-        y,     sense_y = project(x - alpha * Fx, sense_y)
+        y, sense_y = project(x - alpha * Fx, sense_y)
         Fy = G_mat @ y + r_vec
         x_new, sense_x = project(x - alpha * Fy, sense_x)
 
+        step_norm = float(np.linalg.norm(x_new - x))
+        history_step.append(step_norm)
+        check_norm = step_norm
+
+        do_check = stopping in ("residual", "gap") and ((k + 1) % check_every == 0)
+        if do_check:
+            if stopping == "residual":
+                # y = P_X(x - alpha*F(x)) is already the method's own first
+                # half-step above, so this natural-map residual is free.
+                check_norm = float(np.linalg.norm(x - y)) / alpha
+            else:  # "gap"
+                check_norm = compute_gap(x, Fx)
+            history_check.append(check_norm)
+
+        if verbose:
+            msg = f"  extragradient iter {k+1}: ||x^(k+1)-x^k|| = {step_norm:.6e}"
+            if do_check:
+                msg += f", {stopping} check = {check_norm:.6e}"
+            print(msg)
+
         x = x_new
+
+        if check_norm <= tol:
+            status_str = "converged"
+            break
 
     elapsed = time.perf_counter() - t_start
 
     if get_lambda:
         # Solve QP to get dual variables associated with the solution, which is assume feasible
-        # 
+        #
         # min_{lambda,nu} (b-Ax)'lambda + .5*rho*||F(x)+A'lambda+E'\nu||^2 + .5*gamma*(||lambda||^2 + ||nu||^2)
         # s.t. lambda >=0
+        Fx = G_mat @ x + r_vec
         rho=1.e5 # high penalty on violation of stationarity condition
         gamma = 1.e-5 # small regularization to ensure positive definiteness
         Q_qp = gamma*np.eye(m + q_eq, dtype=np.float64)
@@ -219,7 +285,7 @@ def extragradient_gnep(
             Q_qp[m:, m:] = rho*Aeq@Aeq.T
         if m>0 and q_eq>0:
             Q_qp[:m, m:] = rho*A@Aeq.T
-            Q_qp[m:, :m] = rho*Aeq@A.T            
+            Q_qp[m:, :m] = rho*Aeq@A.T
         c_qp = np.zeros(m + q_eq, dtype=np.float64)
         if m>0:
             c_qp[:m] = np.maximum(b - A @ x,0.) + rho*A@Fx
@@ -234,13 +300,13 @@ def extragradient_gnep(
         # Call DAQP to solve the LP
         sense = np.zeros(m, dtype=np.int32)
         #sense[:nvar] = 5  # equality constraints
-        lam_nu, _, flag, report = daqp.solve(Q_qp, c_qp, A_qp, bu_qp, bl_qp, sense)
+        lam_nu, _, flag, report = _daqp_solve(Q_qp, c_qp, A_qp, bu_qp, bl_qp, sense)
         lam = lam_nu[:m] if m>0 else np.zeros(0)
         nu = lam_nu[m:] if q_eq>0 else np.zeros(0)
     else:
         lam = None
         nu = None
-        
+
     return SimpleNamespace(
         x=x,
         lam=lam,
@@ -248,5 +314,8 @@ def extragradient_gnep(
         elapsed_time=elapsed,
         status_str=status_str,
         num_iters=k + 1,
-        info={"converged": status_str == "converged", "final_gap": float(gap)}
+        num_daqp_iters=total_daqp_iters,
+        info={"converged": status_str == "converged", "final_gap": float(check_norm),
+              "alpha": float(alpha), "stopping": stopping},
+        history={"step": history_step, "check": history_check},
     )

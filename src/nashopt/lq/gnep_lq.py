@@ -17,7 +17,8 @@ from .lq_gnep_lemke import solve as solve_lemke
 from .log_ipm_gnep import solve as solve_log_ipm
 from .lemke_dual import solve as solve_lemke_dual
 from .qp_gnep import qp_gnep
-from .extragrad_gnep import extragradient_gnep
+from .extragrad_lq import extragradient_gnep
+from .operator_extrapolation import operator_extrapolation_gnep
 from .._common.report import check_equilibrium_common
 from .._common.optional_deps import add_box_constraints
 
@@ -114,8 +115,10 @@ class GNEP_LQ():
             - "highs" (default) mixed-integer programming solver
             - "gurobi" mixed-integer programming solver
             - "qp_gnep" quadratic programming solver for variational non-parametric GNEPs (Bemporad, Tatarenko, 2026, arXiv 2608.07336)
-            - "extragradient" Korpelevich's Extragradient method for variational non-parametric GNEPs (Korpelevich, 1976), 
+            - "extragradient" Korpelevich's Extragradient method for variational non-parametric GNEPs (Korpelevich, 1976),
                using DAQP for evaluating projections (Bemporad, Tatarenko, 2026, arXiv 2608.07336)
+            - "op_extrap" Kotsalis-Lan-Li Operator Extrapolation method for strongly-monotone variational non-parametric GNEPs
+               (Kotsalis, Lan, Li, 2022/2023), using DAQP for evaluating projections
             - "prox_admm" proximal ADMM algorithm (Borgens and Kanzow, 2021), only for variational non-parametric GNEPs
             - "lemke" Lemke's method for LCPs, only for variational non-parametric GNEPs with lower-bounded variables and no equality constraints.
             - "lemke_dual" Lemke's method applied on the dual reformulation of the KKT conditions of the game, only for variational non-parametric GNEPs. 
@@ -276,7 +279,7 @@ class GNEP_LQ():
             npar = 0
 
         mip_solvers = ["highs", "gurobi"]
-        vgne_solvers = ["qp_gnep", "extragradient", "prox_admm", "lemke", "lemke_dual", "log_ipm", 'dr_daqp']
+        vgne_solvers = ["qp_gnep", "extragradient", "op_extrap", "prox_admm", "lemke", "lemke_dual", "log_ipm", 'dr_daqp']
         solvers = mip_solvers + vgne_solvers
 
         solver = solver.lower()
@@ -958,11 +961,32 @@ class GNEP_LQ():
                 anderson : Use Anderson acceleration (only used when proximal=True)
                 guler : Use Guler's acceleration (only used when proximal=True)
                 
-            For 'extragradient' solver, the following options are supported (see extragrad_gnep.py for details):
-                tol : stopping tolerance. Stop when gap(x) = max_{z in X} F(x)^T (x - z) < tol
+            For 'extragradient' solver, the following options are supported (see extragrad_lq.py for details):
+                tol : stopping tolerance (meaning depends on `stopping`)
                 maxiter : Maximum number of extragradient iterations
-                alpha: Step size for the extragradient iterations
+                alpha: Step size for the extragradient iterations (default 0.99/spectral_norm(G))
                 x0: Initial guess for the extragradient iterations (projected to X if infeasible)
+                stopping : 'step' (default, cheap step-difference test), 'residual' (natural-map
+                    residual, free for extragradient since it reuses the method's own half-step),
+                    or 'gap' (LP-based merit function; not recommended when X is unbounded)
+                check_every : evaluate the 'residual'/'gap' check every this many iterations (default 1)
+                get_lambda: If True, return the Lagrange multipliers for the shared inequality constraints
+
+            For 'op_extrap' solver, the following options are supported (see operator_extrapolation.py for details):
+                x0: Initial guess for the operator-extrapolation iterations (projected to X if infeasible)
+                L, mu : Lipschitz constant / monotonicity modulus of the pseudogradient; if None (default),
+                    computed exactly from the game data
+                safety : safety factor in (0,1] applied to the theoretical step size (default 1.0)
+                tol : stopping tolerance (meaning depends on `stopping`)
+                maxiter : Maximum number of operator-extrapolation iterations (default 1000)
+                stopping : 'step' (default, cheap step-difference test), 'residual' (natural-map
+                    residual, a genuine optimality measure), or 'gap' (LP-based merit function)
+                check_every : evaluate the 'residual'/'gap' check every this many iterations (default 1)
+                check_monotonicity : if True (default), raise an error when the game is not
+                    (numerically) strongly monotone rather than iterating on a formula that assumes it
+                active_set_finish: If True (default), once the DAQP active-constraint pattern stabilizes,
+                    attempt an exact finish by solving the reduced KKT system directly ("DR-DAQP" idea),
+                    typically terminating in far fewer iterations than pure operator extrapolation
                 get_lambda: If True, return the Lagrange multipliers for the shared inequality constraints
 
             For 'prox_admm' solver, the following options are supported (see prox_admm_gne.py for details):
@@ -1205,6 +1229,12 @@ class GNEP_LQ():
                 sol = extragradient_gnep(self.dim, self.mip.Q, self.mip.c, self.A, self.mip.b, lb=self.lb, ub=self.ub, Aeq=self.mip.Aeq, beq=self.mip.beq, verbose=verbose, **solver_options)
                 t_extragrad = time.perf_counter() - t_extragrad
                 sol.elapsed_time = t_extragrad
+
+            elif self.solver == 'op_extrap':
+                t_op_extrap = time.perf_counter()
+                sol = operator_extrapolation_gnep(self.dim, self.mip.Q, self.mip.c, self.A, self.mip.b, lb=self.lb, ub=self.ub, Aeq=self.mip.Aeq, beq=self.mip.beq, verbose=verbose, **solver_options)
+                t_op_extrap = time.perf_counter() - t_op_extrap
+                sol.elapsed_time = t_op_extrap
 
             elif self.solver == 'prox_admm':
                 t_admm = time.perf_counter()
