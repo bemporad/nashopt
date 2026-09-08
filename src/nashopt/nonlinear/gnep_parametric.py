@@ -69,9 +69,7 @@ class ParametricGNEP(GNEP):
             raise ValueError(
                 "npar (number of parameters) must be provided for ParametricGNEP.")
 
-        super().__init__(*args, **kwargs, parametric=True)
-
-        self.npar = int(npar)
+        super().__init__(*args, **kwargs, parametric=True, npar=npar)
 
         if Seq is not None:
             if self.Aeq is None:

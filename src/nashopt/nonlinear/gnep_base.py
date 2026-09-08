@@ -17,7 +17,7 @@ from .._common.report import eval_residual, check_equilibrium_common
 jax.config.update("jax_enable_x64", True)
 
 class GNEP():
-    def __init__(self, sizes, f, g=None, ng=None, lb=None, ub=None, Aeq=None, beq=None, h=None, nh=None, variational=False, parametric=False):
+    def __init__(self, sizes, f, g=None, ng=None, lb=None, ub=None, Aeq=None, beq=None, h=None, nh=None, variational=False, parametric=False, npar=0):
         """
         Generalized Nash Equilibrium Problem (GNEP) with N agents, where agent i solves:
 
@@ -52,6 +52,11 @@ class GNEP():
             Number of shared nonlinear equality constraints. Required if h is provided.
         variational : bool, optional
             If True, solve for a variational GNE by imposing equal Lagrange multipliers.
+        parametric : bool, optional
+            If True, f/g/h take an extra parameter vector p and npar must be a positive
+            integer. Internal flag set by ParametricGNEP; not meant to be passed directly.
+        npar : int, optional
+            Number of game parameters p. Required (must be > 0) if parametric=True.
 
         (C) 2025 Alberto Bemporad
         """
@@ -210,7 +215,14 @@ class GNEP():
                 self.dh = jax.jit(jax.jacobian(self.h, argnums=0))
 
         self.parametric = parametric
-        self.npar = 0
+        if parametric:
+            npar = int(npar)
+            if npar <= 0:
+                raise ValueError(
+                    "npar (number of parameters) must be a positive integer when parametric=True.")
+            self.npar = npar
+        else:
+            self.npar = 0
 
     def kkt_residual_shared(self, z):
         # KKT residual function (shared constraints part)
