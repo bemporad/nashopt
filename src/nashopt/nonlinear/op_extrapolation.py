@@ -257,6 +257,9 @@ def op_extrapolation(gnep, x1, L=None, mu=None, safety=1.0,
         gamma, beta : float, stepsize and extrapolation weight used (Eq. (2.15))
         history : dict with 'residual' (every iteration) and 'nat_residual'
             (every `check_every` iterations, empty if stopping="step")
+        jax_jit_time : float, wall-clock seconds spent jax jit-compiling M (and,
+            when applicable, g/dg and compute_L_mu's own jacobian) before the
+            main loop starts
 
     (C) 2026 A. Bemporad
     """
@@ -267,8 +270,13 @@ def op_extrapolation(gnep, x1, L=None, mu=None, safety=1.0,
     nvar = gnep.nvar
     x1 = np.asarray(x1, dtype=float).reshape(nvar)
 
+    jax_jit_time = 0.0
     if L is None or mu is None:
+        # compute_L_mu builds its own jitted M and differentiates it, so this
+        # first call also pays for that jit-compilation.
+        t_jit0 = time.perf_counter()
         L_est, mu_est, _ = compute_L_mu(gnep, x1)
+        jax_jit_time += time.perf_counter() - t_jit0
         L = L_est if L is None else L
         mu = mu_est if mu is None else mu
 
@@ -280,6 +288,18 @@ def op_extrapolation(gnep, x1, L=None, mu=None, safety=1.0,
     beta = L / (L + max(mu, 0.0))  # extrapolation weight (paper's lambda_t)
 
     M = _pseudogradient(gnep)
+
+    # Trigger and time the jax jit-compilation of M and, if present, the shared
+    # inequality constraints (g, dg), before the projector's IPOPT solves and
+    # the main loop call them.
+    t_jit0 = time.perf_counter()
+    xj1 = jnp.asarray(x1)
+    M(xj1).block_until_ready()
+    if gnep.ng > 0:
+        gnep.g(xj1).block_until_ready()
+        gnep.dg(xj1).block_until_ready()
+    jax_jit_time += time.perf_counter() - t_jit0
+
     projector = _Projector(gnep)
     # A separate, independently warm-started projector for the natural-residual
     # check, so its iterates (projections of x - gamma*M(x)) don't disturb the
@@ -349,6 +369,7 @@ def op_extrapolation(gnep, x1, L=None, mu=None, safety=1.0,
         gamma=gamma,
         beta=beta,
         history={"residual": history_res, "nat_residual": history_nat_res},
+        jax_jit_time=jax_jit_time,
     )
     return sol
 
@@ -413,6 +434,7 @@ def solve_op_extrapolation(gnep, x0=None, solver_opts=None, verbose=1):
     stats.solver = "op_extrapolation"
     stats.kkt_evals = result.iters
     stats.elapsed_time = t0
+    stats.jax_jit_time = result.jax_jit_time
     stats.status_str = "converged" if converged else "max_iterations_reached"
     stats.info = {"converged": converged, "residual": result.residual,
                   "nat_residual": result.nat_residual, "L": result.L, "mu": result.mu}

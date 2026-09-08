@@ -269,6 +269,9 @@ def extragrad_nlgnep(
     SimpleNamespace with:
         x            : ndarray -- approximate variational GNE
         elapsed_time : float   -- wall-clock seconds (excluding setup)
+        jax_jit_time : float   -- wall-clock seconds spent jax jit-compiling the
+                                  per-agent pseudogradient and shared-constraint
+                                  functions, before setup and the main loop use them
         status_str   : str     -- 'converged' or 'max_iterations_reached'
         num_iters    : int     -- iterations performed
         info         : dict    -- {'converged': bool, 'final_err': float}
@@ -279,6 +282,24 @@ def extragrad_nlgnep(
         x0 = np.zeros(nvar)
     else:
         x0 = np.asarray(x0, dtype=np.float64).copy()
+
+    # Trigger and time the jax jit-compilation of the per-agent pseudogradient
+    # (gnep.df) and, if present, the shared constraints (g/dg, h/dh), before
+    # the alpha estimate, the projector's IPOPT/TRF solves, and the main loop
+    # call them. Without this, the first (cold) call is silently absorbed into
+    # whichever of those happens to run first.
+    t_jit0 = time.perf_counter()
+    xj0 = jnp.asarray(x0)
+    for i in range(gnep.N):
+        si, ei = int(gnep.i1[i]), int(gnep.i2[i])
+        gnep.df[i](xj0[si:ei], xj0).block_until_ready()
+    if gnep.ng > 0:
+        gnep.g(xj0).block_until_ready()
+        gnep.dg(xj0).block_until_ready()
+    if gnep.nh > 0:
+        gnep.h(xj0).block_until_ready()
+        gnep.dh(xj0).block_until_ready()
+    jax_jit_time = time.perf_counter() - t_jit0
 
     if alpha is None:
         rng = np.random.default_rng(0)
@@ -329,6 +350,7 @@ def extragrad_nlgnep(
     return SimpleNamespace(
         x=x,
         elapsed_time=elapsed,
+        jax_jit_time=jax_jit_time,
         status_str=status_str,
         num_iters=k + 1,
         info={"converged": status_str == "converged", "final_err": float(err)},
@@ -403,6 +425,7 @@ def solve_extragrad(gnep, x0=None, solver_opts=None, verbose=1):
     stats.solver = "extragrad"
     stats.kkt_evals = result.num_iters
     stats.elapsed_time = t0
+    stats.jax_jit_time = result.jax_jit_time
     stats.status_str = result.status_str
     stats.info = result.info
 

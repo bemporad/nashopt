@@ -169,6 +169,8 @@ def golden_ratio(gnep, x1, lam1=None, x0=None, lam0=None, theta0=1.0, theta_bar=
         converged : bool
         theta : float, last adaptive stepsize theta_k used
         history : dict with 'residual', 'nat_residual' and 'theta' trajectories
+        jax_jit_time : float, wall-clock seconds spent jax jit-compiling F
+            before the main loop starts
 
     (C) 2026 A. Bemporad
     """
@@ -191,6 +193,12 @@ def golden_ratio(gnep, x1, lam1=None, x0=None, lam0=None, theta0=1.0, theta_bar=
         z0 = np.concatenate([x0, lam0])
 
     F = _lifted_F(gnep)
+
+    # Trigger and time the jax jit-compilation of F on the actual problem
+    # shapes, before the main loop calls it.
+    t_jit0 = time.perf_counter()
+    F(jnp.asarray(z0)).block_until_ready()
+    jax_jit_time = time.perf_counter() - t_jit0
 
     if verbose > 0:
         print(f"Golden Ratio Algorithm (adaptive): nvar={nvar}, ng={ng}, "
@@ -263,6 +271,7 @@ def golden_ratio(gnep, x1, lam1=None, x0=None, lam0=None, theta0=1.0, theta_bar=
         converged=converged,
         theta=history_theta[-1] if history_theta else theta0,
         history={"residual": history_res, "nat_residual": history_nat_res, "theta": history_theta},
+        jax_jit_time=jax_jit_time,
     )
     return sol
 
@@ -326,6 +335,7 @@ def solve_golden_ratio(gnep, x0=None, solver_opts=None, verbose=1):
     stats.solver = "golden_ratio"
     stats.kkt_evals = result.iters
     stats.elapsed_time = t0
+    stats.jax_jit_time = result.jax_jit_time
     stats.status_str = "converged" if converged else "max_iterations_reached"
     stats.info = {"converged": converged, "residual": result.residual,
                   "nat_residual": result.nat_residual, "theta": result.theta}
