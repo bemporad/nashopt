@@ -489,6 +489,13 @@ class GNEP():
         f = jax.jit(self.kkt_residual)
         df = jax.jit(jax.jacobian(self.kkt_residual))
 
+        # Trigger and time the jax jit-compilation of f and df on the actual problem
+        # shapes, before the solver starts calling them.
+        t_jit0 = time.perf_counter()
+        f(z0).block_until_ready()
+        df(z0).block_until_ready()
+        jax_jit_time = time.perf_counter() - t_jit0
+
         if solver is None:
             # Auto-select: root-finding (hybr) if the KKT system is square, least-squares (trf) otherwise
             solver = "hybr" if f(z0).shape[0] == z0.shape[0] else "trf"
@@ -552,6 +559,7 @@ class GNEP():
         stats.solver = solver
         stats.kkt_evals = kkt_evals
         stats.elapsed_time = t0
+        stats.jax_jit_time = jax_jit_time
         
         sol = SimpleNamespace()
         sol.x = np.asarray(x)
