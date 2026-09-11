@@ -1,19 +1,20 @@
 """
-Generate a random monotone variational nonlinear GNEP with N players, using the
-"multi-energy system" style shared constraints (Example 1):
+Generate a random monotone variational nonlinear GNEP with N players, extending a
+linear-quadratic vGNE (see lq/generate_random.py) with nonlinear convex shared
+constraints of "multi-energy system" style (Example 1):
 
-    sum_i exp(a_l^T x_i) <= C_l,   l = 1,...,n_exp    (transmission lines)
-    sum_i ||B_r x_i||^2  <= D_r,   r = 1,...,n_norm   (transformers)
-    sum_i x_i^T H_s x_i  <= E_s,   s = 1,...,n_quad   (voltage stability)
+    log(sum_{k=1}^{n_exp_terms[s]} exp(a_exp_s[k,:] . x + b_exp_s[k])) <= c_exp_s,   s = 1,...,n_exp
+    x^T Q_quad_s x + a_quad_s^T x <= c_quad_s,                                       s = 1,...,n_quad
 
 Player i solves:
     min_{x_i}  f_i(x) = (1/2) x^T Q[i] x + c[i]^T x
     subject to  g(x) <= 0,   lb <= x <= ub
 
-with all players sharing the same dimension d. The problem is solved with four
-solvers supported by nashopt.GNEP.solve() (toggle each with the RUN_* flags
-below), and the results are compared against the (x_star, lambda_star) used to
-construct it:
+with all players sharing the same dimension d (no shared linear inequality/equality
+constraints are used in this example, only box constraints). The problem is solved
+with four solvers supported by nashopt.GNEP.solve() (toggle each with the RUN_*
+flags below), and the results are compared against the (x_star, lambda_nl_star)
+used to construct it:
     1) solver="trf": least-squares KKT root-finding (nashopt.GNEP built-in
        solver).
     2) solver="extragrad": Korpelevich's extragradient method, targeting the
@@ -38,13 +39,14 @@ RUN_OP_EX = True
 
 N = 5
 d = 1
+dim = [d] * N
 gnep, data = generate_nl_game(
-    N=N,
-    d=d,
+    dim=dim,
+    m=0,
+    m_act=0,
     n_exp=5,
-    n_norm=5,
     n_quad=5,
-    m_act=3,
+    m_nl_act=2,
     n_box=N*d,
     n_box_act=0,
     seed=0,
@@ -81,7 +83,7 @@ if RUN_EXTRAGRAD:
 # ------------------------------------------------------------------
 if RUN_GOLDEN_RATIO:
     sol_gr = gnep.solve(x0=x0, solver="golden_ratio", verbose=1,
-                         solver_opts={"theta0": 0.3, "max_iter": 20000, "tol": 1e-10})
+                         solver_opts={"theta0": 0.3, "max_iter": 50000, "tol": 1e-10})
 
 # ------------------------------------------------------------------
 # 4) Operator Extrapolation on the original (non-lifted) VI, with
@@ -112,15 +114,18 @@ if RUN_OP_EX:
     print("||x*_op_extrapolation - x_star||  =", np.linalg.norm(sol_oe.x - data["x_star"]))
 
 print()
-print("=== lambda* comparison (shared inequality multipliers) ===")
-print("lambda* (build)        :", data["lambda_star"])
+print("=== lambda* comparison (shared nonlinear inequality multipliers) ===")
+# m=0 in this example (no shared linear inequality constraints), so all of gnep's shared
+# multipliers (gnep.ng = m_nl) correspond to the nonlinear constraints built on top of
+# generate_random()'s vGNE.
+print("lambda_nl* (build)        :", data["lambda_nl_star"])
 if RUN_TRF:
     lam_trf = sol.lam[0][:gnep.ng]
-    print("lambda* (trf, agent 0) :", lam_trf)
-    print("||lam*_trf - lambda_star||          =", np.linalg.norm(lam_trf - data["lambda_star"]))
+    print("lambda_nl* (trf, agent 0) :", lam_trf)
+    print("||lam*_trf - lambda_nl_star||          =", np.linalg.norm(lam_trf - data["lambda_nl_star"]))
 if RUN_GOLDEN_RATIO:
-    print("lambda* (golden ratio) :", sol_gr.lam)
-    print("||lam*_golden_ratio - lambda_star|| =", np.linalg.norm(sol_gr.lam - data["lambda_star"]))
+    print("lambda_nl* (golden ratio) :", sol_gr.lam)
+    print("||lam*_golden_ratio - lambda_nl_star|| =", np.linalg.norm(sol_gr.lam - data["lambda_nl_star"]))
 print("(extragrad and op_extrapolation are multiplier-free: no lambda* estimate)")
 
 # check best responses of all agents at the constructed equilibrium

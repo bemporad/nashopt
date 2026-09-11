@@ -1,24 +1,23 @@
-""" Generate a random nonlinear generalized Nash equilibrium problem (NL-GNEP)
-with N players of common dimension d and given monotonicity constant mu.
+""" Generate a random nonlinear generalized Nash equilibrium problem (NL-GNEP) that extends
+the linear-quadratic variational GNE built by lq/generate_random.py with additional nonlinear
+convex shared inequality constraints.
 
-The cost functions are generated exactly as in the linear-quadratic case (see
-lq/generate_random.py), i.e., convex quadratic and monotone with pseudogradient
-constant mu, in accordance with Lemma 4.2 in [1].
+generate_nl_game() first calls generate_random() to build the quadratic costs as in [1], the shared
+linear inequality/equality constraints, and the box constraints of a variational GNE with a
+known equilibrium x_star (exactly as in examples/linear_quadratic/example_random.py), and then
+adds on top of that game the nonlinear convex shared inequality constraints
 
-The shared constraints are nonlinear convex, of the form described in the
-"multi-energy system" example (Example 1): for a joint strategy
-x = col(x_1,...,x_N), x_i in R^d,
+    log(sum_{k=1}^{n_exp_terms[s]} exp(a_exp_s[k,:] . x + b_exp_s[k])) <= c_exp_s,   s = 1,...,n_exp
+    x^T Q_quad_s x + a_quad_s^T x <= c_quad_s,                                      s = 1,...,n_quad
 
-    sum_{i=1}^N exp(a_l^T x_i) <= C_l,          l = 1,...,n_exp   (transmission lines)
-    sum_{i=1}^N ||B_r x_i||^2  <= D_r,           r = 1,...,n_norm (transformers)
-    sum_{i=1}^N x_i^T H_s x_i  <= E_s,           s = 1,...,n_quad (voltage stability)
+with Q_quad_s symmetric positive semidefinite and n_exp_terms a list of positive integers (one
+per exponential constraint, default 2) giving the number of terms summed in each log-sum-exp
+constraint, for a total of m_nl = n_exp + n_quad extra shared inequality constraints, of which
+m_nl_act are constructed to be active (tight) at the same x_star. The agents' linear cost terms
+are corrected so that the KKT stationarity conditions of the enlarged game still hold at x_star.
 
-with H_s symmetric positive semidefinite, so that each constraint is convex in x
-(it is a sum, over the agents, of a convex function of each agent's own block).
-Box constraints lb <= x <= ub are also generated, with a subset of variables
-active at the constructed equilibrium.
-
-[1] A. Bemporad, T. Tatarenko, "Learning Parametric Monotone Games," arXiv preprint 2609.02494, 2026. https://arxiv.org/abs/2609.02494. 
+[1] A. Bemporad, T. Tatarenko, "Learning Parametric Monotone Games," arXiv preprint 2609.02494, 2026.
+https://arxiv.org/abs/2609.02494
 
 (C) 2026 A. Bemporad
 """
@@ -27,20 +26,22 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from .gnep_base import GNEP
+from ..lq.generate_random import generate_random
 
 jax.config.update("jax_enable_x64", True)
 
 
 def generate_nl_game(
-    N: int = 2,
-    d: int = 1,
-    n_exp: int = 0,
-    n_norm: int = 0,
-    n_quad: int = 0,
-    m_act: int = 0,
+    dim: list[int],
+    m: int,
+    m_act: int,
+    q: int = 0,
     n_box: int = 0,
     n_box_act: int = 0,
-    k_norm: int | None = None,
+    n_exp: int = 0,
+    n_exp_terms: list[int] | None = None,
+    n_quad: int = 0,
+    m_nl_act: int = 0,
     seed: int | None = None,
     mu: float = 0., # desired monotonicity constant, set mu = 0 for merely monotone GNEs
     inactive_slack_min: float = 0.5,
@@ -49,84 +50,107 @@ def generate_nl_game(
     lambda_max: float = 1.5,
     box_slack_min: float = 0.5,
     box_slack_max: float = 1.5,
-    a_scale: float = 1.0,
-    B_scale: float = 1.0,
-    H_scale: float = 1.0,
+    mu_scale: float = 1.0,
+    nl_inactive_slack_min: float = 0.5,
+    nl_inactive_slack_max: float = 1.5,
+    nl_lambda_min: float = 0.5,
+    nl_lambda_max: float = 1.5,
+    a_exp_scale: float = 1.0,
+    b_exp_scale: float = 1.0,
+    Q_quad_scale: float = 1.0,
+    a_quad_scale: float = 1.0,
+    solver: str = "dr_daqp",
 ):
     """
-    Generate a nonlinear generalized Nash equilibrium problem with convex quadratic,
-    monotone costs and nonlinear convex shared constraints.
+    Generate a nonlinear generalized Nash equilibrium problem obtained by adding nonlinear
+    convex shared inequality constraints on top of a linear-quadratic vGNE.
 
-    There are N agents, all of the same dimension d (required),
-    so the aggregate variable is
+    There are N = len(dim) agents, agent i having dim[i] variables, so the aggregate
+    variable is
 
-        x = col(x_1, ..., x_N) in R^nvar, x_i in R^d, nvar = N*d.
+        x = col(x_1, ..., x_N) in R^nvar, x_i in R^(dim[i]), nvar = sum(dim).
 
     Each agent i minimizes
 
         J_i(x) = 0.5 x^T Q_i x + c_i^T x_i
 
-    w.r.t. x_i given x_-i, where Q_i is symmetric positive semidefinite and c_i is a
-    linear term (built exactly as in lq/generate_random.py).
+    w.r.t. x_i given x_-i, where Q_i is symmetric positive semidefinite and c_i is a linear
+    term. Q_i and the shared linear constraints/box constraints are built exactly as in
+    lq/generate_random.py, by calling that function first. On top of that game, this function
+    adds the nonlinear convex shared inequality constraints
 
-    The shared nonlinear inequality constraints are g(x) <= 0, where g stacks:
+        log(sum_{k=1}^N exp(a_exp_s[k,:] . x + b_exp_s[k])) <= c_exp_s,   s = 1,...,n_exp
+        x^T Q_quad_s x + a_quad_s^T x <= c_quad_s,                        s = 1,...,n_quad
 
-        n_exp   constraints  sum_i exp(a_l^T x_i) - C_l           (transmission lines)
-        n_norm  constraints  sum_i ||B_r x_i||^2 - D_r            (transformers)
-        n_quad  constraints  sum_i x_i^T H_s x_i - E_s            (voltage stability)
+    with Q_quad_s symmetric positive semidefinite, for a total of m_nl = n_exp + n_quad
+    nonlinear shared inequality constraints, of which m_nl_act are constructed to be active
+    (tight) at the same equilibrium x_star built by generate_random().
 
-    for a total of m = n_exp + n_norm + n_quad shared inequality constraints, of which
-    m_act are constructed to be active (tight) at the equilibrium x_star.
-
-    Box constraints lb <= x <= ub are generated for n_box randomly chosen entries of x
-    (the remaining entries are unbounded), of which n_box_act are active at x_star
-    (each one active either at its lower or upper bound, chosen at random).
+    The full set of shared inequality constraints (linear A x <= b from generate_random(),
+    plus the nonlinear ones above) is passed to the nonlinear GNEP solver as a single
+    g(x) <= 0 constraint; the shared linear equality constraints E x = h and the box
+    constraints lb <= x <= ub are passed through unchanged.
 
     Parameters
     ----------
-    N : int
-        Number of agents (players).
-    d : int
-        Number of decision variables per agent. All agents share the same dimension d.
-    n_exp : int
-        Number of exponential ("transmission line") shared inequality constraints.
-    n_norm : int
-        Number of quadratic-norm ("transformer") shared inequality constraints.
-    n_quad : int
-        Number of quadratic-form ("voltage stability") shared inequality constraints.
+    dim : list of int
+        Number of decision variables per agent, dim[i] for agent i. N = len(dim).
+    m : int
+        Number of shared linear inequality constraints (see generate_random()).
     m_act : int
-        Number of active shared inequality constraints at the constructed GNE, out of
-        m = n_exp + n_norm + n_quad. Which of the m constraints are active is chosen
-        at random.
+        Number of active shared linear inequality constraints at x_star (see generate_random()).
+    q : int, default 0
+        Number of shared linear equality constraints (see generate_random()).
     n_box : int
-        Number of decision variables (out of nvar) that get finite box constraints.
-        The remaining nvar - n_box variables are left unbounded.
+        Number of decision variables that get finite box constraints (see generate_random()).
     n_box_act : int
-        Number of box constraints active at x_star, out of n_box (each active either
-        at its lower or upper bound, chosen at random).
-    k_norm : int or None
-        Output dimension of the matrices B_r used in the "transformer" constraints.
-        Defaults to d if None.
+        Number of box constraints active at x_star, out of n_box (see generate_random()).
+    n_exp : int
+        Number of exponential (log-sum-exp) shared inequality constraints.
+    n_exp_terms : list of int or None
+        Number of terms n_exp_terms[s] summed in the s-th log-sum-exp constraint, for
+        s = 1,...,n_exp. If None, defaults to 2 terms per constraint. Must have length n_exp,
+        with all entries strictly positive.
+    n_quad : int
+        Number of quadratic-form shared inequality constraints.
+    m_nl_act : int
+        Number of active nonlinear inequality constraints at x_star, out of
+        m_nl = n_exp + n_quad. Which of the m_nl constraints are active is chosen at random.
     seed : int or None
         Random seed.
     mu : float
-        Desired lower bound on lambda_min(0.5*(G+G.T)), i.e., the monotonicity constant
-        of the pseudogradient.
+        Desired lower bound on lambda_min(0.5*(G+G.T)), i.e., the monotonicity constant of the
+        pseudogradient (see generate_random()).
     inactive_slack_min, inactive_slack_max : float
-        Range for strictly positive slacks of inactive shared inequality constraints.
+        Range for strictly positive slacks of inactive shared linear inequality constraints
+        (see generate_random()).
     lambda_min, lambda_max : float
-        Range for strictly positive multipliers of active shared inequality constraints
-        and active box constraints.
+        Range for strictly positive multipliers of active shared linear inequality
+        constraints and active box constraints (see generate_random()).
     box_slack_min, box_slack_max : float
         Range for strictly positive slacks of the inactive side of box constraints
-        (both sides, for variables with inactive box constraints).
-    a_scale : float
-        Scale of the random vectors a_l defining the exponential constraints.
-    B_scale : float
-        Scale of the random matrices B_r defining the quadratic-norm constraints.
-    H_scale : float
-        Scale of the random matrices used to build the PSD matrices H_s defining the
+        (see generate_random()).
+    mu_scale : float
+        Scale for shared linear equality multipliers (see generate_random()).
+    nl_inactive_slack_min, nl_inactive_slack_max : float
+        Range for strictly positive slacks of inactive nonlinear shared inequality
+        constraints.
+    nl_lambda_min, nl_lambda_max : float
+        Range for strictly positive multipliers of active nonlinear shared inequality
+        constraints.
+    a_exp_scale : float
+        Scale of the random matrices a_exp_s defining the exponential constraints.
+    b_exp_scale : float
+        Scale of the random bias vectors b_exp_s defining the exponential constraints.
+    Q_quad_scale : float
+        Scale of the random matrices used to build the PSD matrices Q_quad_s defining the
         quadratic-form constraints.
+    a_quad_scale : float
+        Scale of the random vectors a_quad_s defining the quadratic-form constraints.
+    solver : str
+        Solver passed to generate_random() to build the underlying linear-quadratic vGNE data
+        (see generate_random() and GNEP_LQ). Unrelated to the solver later used to solve the
+        returned nonlinear GNEP via gnep.solve(solver=...).
 
     Returns
     -------
@@ -136,170 +160,159 @@ def generate_nl_game(
         Dictionary containing the generated NL-GNEP data.
     """
 
-    if N < 2:
-        raise ValueError("N must be greater or equal than 2.")
-    if d <= 0:
-        raise ValueError("dim must be positive.")
-    dim = [d] * N  # all agents have the same dimension d
-
-    m = n_exp + n_norm + n_quad
-    if not (0 <= m_act <= m):
-        raise ValueError("m_act must satisfy 0 <= m_act <= m.")
-    if k_norm is None:
-        k_norm = d
-
-    nvar = N * d
-    if not (0 <= n_box <= nvar):
-        raise ValueError("n_box must satisfy 0 <= n_box <= nvar.")
-    if not (0 <= n_box_act <= n_box):
-        raise ValueError("n_box_act must satisfy 0 <= n_box_act <= n_box.")
-
-    rng = np.random.default_rng(seed)
+    N = len(dim)
+    if n_exp < 0:
+        raise ValueError("n_exp must be nonnegative.")
+    if n_quad < 0:
+        raise ValueError("n_quad must be nonnegative.")
+    if n_exp_terms is None:
+        n_exp_terms = [2] * n_exp
+    if len(n_exp_terms) != n_exp:
+        raise ValueError("n_exp_terms must have length n_exp.")
+    if any(k <= 0 for k in n_exp_terms):
+        raise ValueError("all entries of n_exp_terms must be positive.")
+    m_nl = n_exp + n_quad
+    if not (0 <= m_nl_act <= m_nl):
+        raise ValueError("m_nl_act must satisfy 0 <= m_nl_act <= m_nl.")
 
     # ------------------------------------------------------------
-    # 1. Choose a target variational equilibrium.
+    # 1. Build the quadratic costs, shared linear constraints, and box constraints, exactly
+    #    as in generate_random(). A separate child seed is spawned for the nonlinear part
+    #    below so that its randomness does not repeat the stream used here.
     # ------------------------------------------------------------
-    x_star = rng.standard_normal(nvar)
+    seed_lq, seed_nl = np.random.SeedSequence(seed).spawn(2)
 
-    # ------------------------------------------------------------
-    # 2. Generate quadratic cost matrices Q_i, exactly as in the LQ case.
-    #
-    # Q = C'C + D - D' + (mu-lambda_min(C'C))*I
-    # ------------------------------------------------------------
-    C = rng.standard_normal((nvar, nvar))
-    mask_C = np.triu(np.ones((nvar, nvar), dtype=bool))
-    C = np.where(mask_C, C, 0.0)  # Make block upper triangular
-    CtC = C.T @ C
+    gnep_lq_prob, data = generate_random(
+        dim=dim, m=m, m_act=m_act, q=q, n_box=n_box, n_box_act=n_box_act, seed=seed_lq, mu=mu,
+        inactive_slack_min=inactive_slack_min, inactive_slack_max=inactive_slack_max,
+        lambda_min=lambda_min, lambda_max=lambda_max,
+        box_slack_min=box_slack_min, box_slack_max=box_slack_max,
+        mu_scale=mu_scale, solver=solver,
+    )
 
-    block_id = np.repeat(np.arange(N), dim)
-    block_mask_D = block_id[:, None] < block_id[None, :]
-    D = rng.standard_normal((nvar, nvar))
-    D = np.where(block_mask_D, D, 0.0)  # Make block strictly lower triangular
+    nvar = data["nvar"]
+    x_star = data["x_star"]
+    G = data["G"]
+    lambda_star = data["lambda_star"]
+    mu_star = data["mu_star"]
+    lb = data["lb"]
+    ub = data["ub"]
+    lam_lb = data["lam_lb"]
+    lam_ub = data["lam_ub"]
 
-    lambda_min_CtC = np.linalg.eigvalsh(CtC).min()
-    G = CtC + D - D.T + (mu - lambda_min_CtC) * np.eye(nvar)  # Pseudogradient matrix
-
+    A = gnep_lq_prob.A
+    b = gnep_lq_prob.b
+    E = gnep_lq_prob.Aeq
+    h = gnep_lq_prob.beq
+    Q_agents = gnep_lq_prob.Q  # already symmetrized by GNEP_LQ
     offsets = np.concatenate(([0], np.cumsum(dim)))
-    Q_agents = []
-    for i in range(N):
-        Qi = np.zeros((nvar, nvar))
-        si, ei = offsets[i], offsets[i + 1]
-        Qi[si:ei, si:ei] = G[si:ei, si:ei]
-        Qi[si:ei, :si] = 2.0 * G[si:ei, :si]
-        Qi[si:ei, ei:] = 2.0 * G[si:ei, ei:]
-        Q_agents.append(0.5 * (Qi + Qi.T))  # symmetrize: grad_i(0.5 x'Qi x) = G[si:ei,:] @ x
 
-    lam_min_shifted = np.linalg.eigvalsh(0.5 * (G + G.T)).min()
-    print(f"Monotonicity check: lambda_min(0.5*(G+G.T)) = {lam_min_shifted:.4e}")
+    rng = np.random.default_rng(seed_nl)
 
     # ------------------------------------------------------------
-    # 3. Generate nonlinear convex shared inequality constraints.
+    # 2. Generate the exponential (log-sum-exp) shared inequality constraints. Each
+    #    constraint s sums n_exp_terms[s] terms; since these counts may differ across
+    #    constraints, a_exp/b_exp are padded to the largest term count K_max, with padded
+    #    entries given bias -inf so they contribute exp(-inf) = 0 to the sum regardless of
+    #    the (zero) padding in a_exp.
     # ------------------------------------------------------------
-    a_mat = rng.standard_normal((n_exp, d)) * a_scale / np.sqrt(d)
-    B_arr = rng.standard_normal((n_norm, k_norm, d)) * B_scale / np.sqrt(d)
-    M_arr = rng.standard_normal((n_quad, d, d)) * H_scale / np.sqrt(d)
-    H_arr = np.einsum("sjk,sjl->skl", M_arr, M_arr)  # H_s = M_s^T M_s, PSD
+    K_max = max(n_exp_terms) if n_exp > 0 else 0
+    a_exp = np.zeros((n_exp, K_max, nvar))
+    b_exp = -np.inf * np.ones((n_exp, K_max))
+    for s in range(n_exp):
+        K_s = n_exp_terms[s]
+        a_exp[s, :K_s, :] = rng.standard_normal((K_s, nvar)) * a_exp_scale / np.sqrt(nvar)
+        b_exp[s, :K_s] = rng.standard_normal(K_s) * b_exp_scale
 
-    a_mat_j = jnp.asarray(a_mat)
-    B_arr_j = jnp.asarray(B_arr)
-    H_arr_j = jnp.asarray(H_arr)
+    a_exp_j = jnp.asarray(a_exp)
+    b_exp_j = jnp.asarray(b_exp)
 
-    def phi(x):
-        """Raw values of the m shared constraints (before subtracting the RHS)."""
-        X = x.reshape(N, d)
+    # ------------------------------------------------------------
+    # 3. Generate the quadratic-form shared inequality constraints.
+    # ------------------------------------------------------------
+    M_arr = rng.standard_normal((n_quad, nvar, nvar)) * Q_quad_scale / np.sqrt(nvar)
+    Q_quad = np.einsum("sjk,sjl->skl", M_arr, M_arr)  # Q_quad_s = M_s^T M_s, PSD
+    a_quad = rng.standard_normal((n_quad, nvar)) * a_quad_scale / np.sqrt(nvar)
+
+    Q_quad_j = jnp.asarray(Q_quad)
+    a_quad_j = jnp.asarray(a_quad)
+
+    def phi_nl(x):
+        """Raw values of the m_nl = n_exp + n_quad nonlinear constraints (before subtracting
+        the RHS)."""
         parts = []
         if n_exp > 0:
-            parts.append(jnp.sum(jnp.exp(X @ a_mat_j.T), axis=0))          # (n_exp,)
-        if n_norm > 0:
-            BX = jnp.einsum("rkd,nd->rnk", B_arr_j, X)
-            parts.append(jnp.sum(BX ** 2, axis=(1, 2)))                    # (n_norm,)
+            lin = jnp.einsum("skj,j->sk", a_exp_j, x) + b_exp_j  # (n_exp, K_max)
+            parts.append(jax.scipy.special.logsumexp(lin, axis=1))  # (n_exp,)
         if n_quad > 0:
-            quad = jnp.einsum("nj,sjk,nk->sn", X, H_arr_j, X)
-            parts.append(jnp.sum(quad, axis=1))                           # (n_quad,)
+            quad = jnp.einsum("sjk,j,k->s", Q_quad_j, x, x) + a_quad_j @ x  # (n_quad,)
+            parts.append(quad)
         if parts:
             return jnp.concatenate(parts)
         return jnp.zeros(0)
 
     x_star_j = jnp.asarray(x_star)
-    phi_star = np.asarray(phi(x_star_j))
+    phi_nl_star = np.asarray(phi_nl(x_star_j))
 
     # ------------------------------------------------------------
-    # 4. Fix RHS = phi(x_star): active constraints tight, inactive ones with a
-    #    random positive slack.
+    # 4. Fix RHS = phi_nl(x_star): active constraints tight, inactive ones with a random
+    #    positive slack.
     # ------------------------------------------------------------
-    perm = rng.permutation(m)
-    active = perm[:m_act]
-    inactive = perm[m_act:]
+    perm_nl = rng.permutation(m_nl)
+    active_nl = perm_nl[:m_nl_act]
+    inactive_nl = perm_nl[m_nl_act:]
 
-    RHS = phi_star.copy()
-    if m_act < m:
-        slacks = rng.uniform(inactive_slack_min, inactive_slack_max, size=m - m_act)
-        RHS[inactive] += slacks
+    RHS_nl = phi_nl_star.copy()
+    if m_nl_act < m_nl:
+        slacks_nl = rng.uniform(nl_inactive_slack_min, nl_inactive_slack_max, size=m_nl - m_nl_act)
+        RHS_nl[inactive_nl] += slacks_nl
     else:
-        slacks = np.zeros(0)
+        slacks_nl = np.zeros(0)
 
-    RHS_j = jnp.asarray(RHS)
-
-    def g(x):
-        return phi(x) - RHS_j
+    RHS_nl_j = jnp.asarray(RHS_nl)
 
     # ------------------------------------------------------------
-    # 5. Choose multipliers for the active shared inequality constraints.
+    # 5. Choose multipliers for the active nonlinear shared inequality constraints.
     # ------------------------------------------------------------
-    lambda_star = np.zeros(m)
-    if m_act > 0:
-        lambda_star[active] = rng.uniform(lambda_min, lambda_max, size=m_act)
+    lambda_nl_star = np.zeros(m_nl)
+    if m_nl_act > 0:
+        lambda_nl_star[active_nl] = rng.uniform(nl_lambda_min, nl_lambda_max, size=m_nl_act)
 
-    dphi_star = np.asarray(jax.jacobian(phi)(x_star_j))  # (m, nvar), same as dg(x_star)
-
-    # ------------------------------------------------------------
-    # 6. Generate box constraints lb <= x <= ub, with n_box_act active at x_star.
-    # ------------------------------------------------------------
-    lb = -np.inf * np.ones(nvar)
-    ub = np.inf * np.ones(nvar)
-    lam_lb = np.zeros(nvar)
-    lam_ub = np.zeros(nvar)
-
-    box_idx = rng.choice(nvar, size=n_box, replace=False)
-    box_act_idx = rng.choice(box_idx, size=n_box_act, replace=False) if n_box > 0 else np.zeros(0, dtype=int)
-    box_inact_idx = np.setdiff1d(box_idx, box_act_idx)
-
-    for j in box_act_idx:
-        j = int(j)
-        if rng.uniform() < 0.5:
-            # active lower bound
-            lb[j] = x_star[j]
-            ub[j] = x_star[j] + rng.uniform(box_slack_min, box_slack_max)
-            lam_lb[j] = rng.uniform(lambda_min, lambda_max)
-        else:
-            # active upper bound
-            ub[j] = x_star[j]
-            lb[j] = x_star[j] - rng.uniform(box_slack_min, box_slack_max)
-            lam_ub[j] = rng.uniform(lambda_min, lambda_max)
-
-    for j in box_inact_idx:
-        j = int(j)
-        lb[j] = x_star[j] - rng.uniform(box_slack_min, box_slack_max)
-        ub[j] = x_star[j] + rng.uniform(box_slack_min, box_slack_max)
+    dphi_nl_star = np.asarray(jax.jacobian(phi_nl)(x_star_j))  # (m_nl, nvar)
 
     # ------------------------------------------------------------
-    # 7. Choose linear cost terms c so that KKT stationarity holds:
+    # 6. Correct the agents' linear cost terms so that KKT stationarity still holds:
     #
-    #     G x_star + c + dg(x_star)^T lambda_star - lam_lb + lam_ub = 0.
+    #     G x_star + c + A.T lambda_star + E.T mu_star - lam_lb + lam_ub
+    #         + dphi_nl(x_star).T lambda_nl_star = 0.
     #
-    # Therefore:
-    #
-    #     c = -G x_star - dg(x_star)^T lambda_star + lam_lb - lam_ub.
+    # generate_random() already ensured that the first four terms sum to zero (with c the
+    # linear cost term it built), so only the extra nonlinear term needs to be subtracted
+    # from each agent's own block of c.
     # ------------------------------------------------------------
-    c = -G @ x_star - dphi_star.T @ lambda_star + lam_lb - lam_ub
+    correction = dphi_nl_star.T @ lambda_nl_star  # (nvar,)
 
-    # Split c into agent-wise linear terms c_i (only the agent's own block matters).
-    c_agents = []
+    c_agents = [ci.copy() for ci in gnep_lq_prob.c]
     for i in range(N):
         si, ei = offsets[i], offsets[i + 1]
-        ci = rng.standard_normal(nvar)
-        ci[si:ei] = c[si:ei]
-        c_agents.append(ci)
+        c_agents[i][si:ei] -= correction[si:ei]
+
+    # ------------------------------------------------------------
+    # 7. Combine the shared linear inequality constraints A x <= b (from generate_random())
+    #    with the new nonlinear ones into a single g(x) <= 0 constraint for the GNEP.
+    # ------------------------------------------------------------
+    A_j = jnp.asarray(A)
+    b_j = jnp.asarray(b)
+
+    def g(x):
+        parts = []
+        if m > 0:
+            parts.append(A_j @ x - b_j)
+        if m_nl > 0:
+            parts.append(phi_nl(x) - RHS_nl_j)
+        if parts:
+            return jnp.concatenate(parts)
+        return jnp.zeros(0)
 
     # ------------------------------------------------------------
     # 8. Build the jax cost functions f_i(x) = 0.5 x^T Q_i x + c_i^T x.
@@ -315,68 +328,52 @@ def generate_nl_game(
 
     f_agents = [make_f(Q_agents_j[i], c_agents_j[i]) for i in range(N)]
 
-    lb_j = np.where(np.isfinite(lb), lb, -np.inf)
-    ub_j = np.where(np.isfinite(ub), ub, np.inf)
-
-    gnep = GNEP(list(dim), f_agents, g=g, ng=m, lb=lb_j, ub=ub_j, variational=True)
+    gnep = GNEP(list(dim), f_agents, g=g, ng=m + m_nl, lb=lb, ub=ub, Aeq=E, beq=h, variational=True)
 
     # ------------------------------------------------------------
     # 9. Diagnostics.
     # ------------------------------------------------------------
-    ineq_residual = phi_star - RHS
-    box_lb_residual = lb[np.isfinite(lb)] - x_star[np.isfinite(lb)]
-    box_ub_residual = x_star[np.isfinite(ub)] - ub[np.isfinite(ub)]
-    stationarity = G @ x_star + c + dphi_star.T @ lambda_star - lam_lb + lam_ub
+    nl_ineq_residual = phi_nl_star - RHS_nl
+    detected_active_nl = np.where(np.abs(nl_ineq_residual) <= 1e-8)[0]
 
-    detected_active = np.where(np.abs(ineq_residual) <= 1e-8)[0]
+    # Reconstruct the true (per-agent-block) linear cost term used above.
+    c_true = np.zeros(nvar)
+    for i in range(N):
+        si, ei = offsets[i], offsets[i + 1]
+        c_true[si:ei] = c_agents[i][si:ei]
 
-    data = {
+    stationarity = (G @ x_star + c_true + A.T @ lambda_star + E.T @ mu_star
+                    - lam_lb + lam_ub + correction)
+
+    data.update({
         # Dimensions
-        "N": N,
-        "d": d,
-        "dims": dim,
-        "nvar": nvar,
         "n_exp": n_exp,
-        "n_norm": n_norm,
+        "n_exp_terms": n_exp_terms,
         "n_quad": n_quad,
-        "m": m,
-        "m_act": m_act,
-        "n_box": n_box,
-        "n_box_act": n_box_act,
-
-        # Pseudogradient matrix
-        "G": G,
+        "m_nl": m_nl,
+        "m_nl_act": m_nl_act,
 
         # Nonlinear constraint data
-        "a_mat": a_mat,
-        "B_arr": B_arr,
-        "H_arr": H_arr,
-        "RHS": RHS,
-        "phi": phi,
+        "a_exp": a_exp,
+        "b_exp": b_exp,
+        "Q_quad": Q_quad,
+        "a_quad": a_quad,
+        "RHS_nl": RHS_nl,
+        "phi_nl": phi_nl,
         "g": g,
 
-        # Constructed vGNE
-        "x_star": x_star,
-        "lambda_star": lambda_star,
-        "lb": lb,
-        "ub": ub,
-        "lam_lb": lam_lb,
-        "lam_ub": lam_ub,
+        # Nonlinear active-set information
+        "lambda_nl_star": lambda_nl_star,
+        "active_nl": active_nl,
+        "inactive_nl": inactive_nl,
+        "inactive_slacks_nl": slacks_nl,
 
-        # Active-set information
-        "active": active,
-        "inactive": inactive,
-        "inactive_slacks": slacks,
-        "box_active_idx": box_act_idx,
-        "box_inactive_idx": box_inact_idx,
-
-        # Diagnostics
-        "ineq_residual": ineq_residual,
-        "box_lb_residual": box_lb_residual,
-        "box_ub_residual": box_ub_residual,
+        # Diagnostics (override the linear-only ones from generate_random with the full-game
+        # stationarity residual; the linear-only diagnostics remain available unchanged)
+        "nl_ineq_residual": nl_ineq_residual,
+        "detected_active_nl": detected_active_nl,
         "stationarity_residual": stationarity,
         "stationarity_residual_norm": np.linalg.norm(stationarity),
-        "detected_active": detected_active,
-    }
+    })
 
     return gnep, data

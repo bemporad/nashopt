@@ -16,12 +16,16 @@ def generate_random(
     m: int,
     m_act: int,
     q: int = 0,
+    n_box: int = 0,
+    n_box_act: int = 0,
     seed: int | None = None,
     mu: float = 0., # desired monotonicity constant, set mu = 0 for merely monotone GNEs
     inactive_slack_min: float = 0.5,
     inactive_slack_max: float = 1.5,
     lambda_min: float = 0.5,
     lambda_max: float = 1.5,
+    box_slack_min: float = 0.5,
+    box_slack_max: float = 1.5,
     mu_scale: float = 1.0,
     solver: str = "dr_daqp"
     ):
@@ -56,6 +60,12 @@ def generate_random(
         Number of active inequalities at the constructed variational GNE.
     q : int, default 0
         Number of shared equality constraints.
+    n_box : int
+        Number of decision variables (out of nvar) that get finite box constraints.
+        The remaining nvar - n_box variables are left unbounded.
+    n_box_act : int
+        Number of box constraints active at x_star, out of n_box (each active either
+        at its lower or upper bound, chosen at random).
     seed : int or None
         Random seed.
     mu : float
@@ -63,7 +73,11 @@ def generate_random(
     inactive_slack_min, inactive_slack_max : float
         Range for strictly positive slacks of inactive inequalities.
     lambda_min, lambda_max : float
-        Range for strictly positive active inequality multipliers.
+        Range for strictly positive multipliers of active inequality constraints and
+        active box constraints.
+    box_slack_min, box_slack_max : float
+        Range for strictly positive slacks of the inactive side of box constraints
+        (both sides, for variables with inactive box constraints).
     mu_scale : float
         Scale for equality multipliers.
 
@@ -86,6 +100,11 @@ def generate_random(
         raise ValueError("m_act must satisfy 0 <= m_act <= m.")
 
     nvar = sum(dim)
+    if not (0 <= n_box <= nvar):
+        raise ValueError("n_box must satisfy 0 <= n_box <= nvar.")
+    if not (0 <= n_box_act <= n_box):
+        raise ValueError("n_box_act must satisfy 0 <= n_box_act <= n_box.")
+
     offsets = np.concatenate(([0], np.cumsum(dim)))
     rng = np.random.default_rng(seed)
 
@@ -171,15 +190,45 @@ def generate_random(
         lambda_star[active] = rng.uniform(lambda_min, lambda_max, size=m_act)
 
     # ------------------------------------------------------------
+    # 7b. Generate box constraints lb <= x <= ub, with n_box_act active at x_star.
+    # ------------------------------------------------------------
+    lb = -np.inf * np.ones(nvar)
+    ub = np.inf * np.ones(nvar)
+    lam_lb = np.zeros(nvar)
+    lam_ub = np.zeros(nvar)
+
+    box_idx = rng.choice(nvar, size=n_box, replace=False)
+    box_act_idx = rng.choice(box_idx, size=n_box_act, replace=False) if n_box > 0 else np.zeros(0, dtype=int)
+    box_inact_idx = np.setdiff1d(box_idx, box_act_idx)
+
+    for j in box_act_idx:
+        j = int(j)
+        if rng.uniform() < 0.5:
+            # active lower bound
+            lb[j] = x_star[j]
+            ub[j] = x_star[j] + rng.uniform(box_slack_min, box_slack_max)
+            lam_lb[j] = rng.uniform(lambda_min, lambda_max)
+        else:
+            # active upper bound
+            ub[j] = x_star[j]
+            lb[j] = x_star[j] - rng.uniform(box_slack_min, box_slack_max)
+            lam_ub[j] = rng.uniform(lambda_min, lambda_max)
+
+    for j in box_inact_idx:
+        j = int(j)
+        lb[j] = x_star[j] - rng.uniform(box_slack_min, box_slack_max)
+        ub[j] = x_star[j] + rng.uniform(box_slack_min, box_slack_max)
+
+    # ------------------------------------------------------------
     # 8. Choose linear cost terms c so that stationarity holds:
     #
-    #     G x_star + c + A.T lambda_star + E.T mu_star = 0.
+    #     G x_star + c + A.T lambda_star + E.T mu_star - lam_lb + lam_ub = 0.
     #
     # Therefore:
     #
-    #     c = -G x_star - A.T lambda_star - E.T mu_star.
+    #     c = -G x_star - A.T lambda_star - E.T mu_star + lam_lb - lam_ub.
     # ------------------------------------------------------------
-    c = -G @ x_star - A.T @ lambda_star - E.T @ mu_star
+    c = -G @ x_star - A.T @ lambda_star - E.T @ mu_star + lam_lb - lam_ub
 
     # Split c into agent-wise linear terms c_i.
     c_agents = []
@@ -189,14 +238,16 @@ def generate_random(
         ci[si:ei] = c[si:ei]
         c_agents.append(ci)
 
-    gnep_lq_prob = GNEP_LQ(list(dim), Q_agents, c_agents, A=A, b=b, Aeq=E, beq=h, variational=True, solver=solver)
-    
+    gnep_lq_prob = GNEP_LQ(list(dim), Q_agents, c_agents, lb=lb, ub=ub, A=A, b=b, Aeq=E, beq=h, variational=True, solver=solver)
+
     # ------------------------------------------------------------
     # 9. Diagnostics.
     # ------------------------------------------------------------
     ineq_residual = A @ x_star - b
     eq_residual = E @ x_star - h
-    stationarity = G @ x_star + c + A.T @ lambda_star + E.T @ mu_star
+    box_lb_residual = lb[np.isfinite(lb)] - x_star[np.isfinite(lb)]
+    box_ub_residual = x_star[np.isfinite(ub)] - ub[np.isfinite(ub)]
+    stationarity = G @ x_star + c + A.T @ lambda_star + E.T @ mu_star - lam_lb + lam_ub
 
     detected_active = np.where(np.abs(ineq_residual) <= 1e-8)[0]
 
@@ -208,6 +259,8 @@ def generate_random(
         "m": m,
         "m_act": m_act,
         "q": q,
+        "n_box": n_box,
+        "n_box_act": n_box_act,
 
         # Pseudogradient matrix
         "G": G,
@@ -216,15 +269,23 @@ def generate_random(
         "x_star": x_star,
         "lambda_star": lambda_star,
         "mu_star": mu_star,
+        "lb": lb,
+        "ub": ub,
+        "lam_lb": lam_lb,
+        "lam_ub": lam_ub,
 
         # Active-set information
         "active": active,
         "inactive": inactive,
         "inactive_slacks": slacks,
+        "box_active_idx": box_act_idx,
+        "box_inactive_idx": box_inact_idx,
 
         # Diagnostics
         "ineq_residual": ineq_residual,
         "eq_residual": eq_residual,
+        "box_lb_residual": box_lb_residual,
+        "box_ub_residual": box_ub_residual,
         "stationarity_residual": stationarity,
         "stationarity_residual_norm": np.linalg.norm(stationarity),
         "eq_residual_norm": np.linalg.norm(eq_residual),
