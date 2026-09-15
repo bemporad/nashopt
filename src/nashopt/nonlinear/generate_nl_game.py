@@ -60,6 +60,7 @@ def generate_nl_game(
     Q_quad_scale: float = 1.0,
     a_quad_scale: float = 1.0,
     solver: str = "dr_daqp",
+    verbose: bool = False,
 ):
     """
     Generate a nonlinear generalized Nash equilibrium problem obtained by adding nonlinear
@@ -119,7 +120,7 @@ def generate_nl_game(
     seed : int or None
         Random seed.
     mu : float
-        Desired lower bound on lambda_min(0.5*(G+G.T)), i.e., the monotonicity constant of the
+        Desired lower bound on min eigenvalue of 0.5*(G+G.T), i.e., the monotonicity constant of the
         pseudogradient (see generate_random()).
     inactive_slack_min, inactive_slack_max : float
         Range for strictly positive slacks of inactive shared linear inequality constraints
@@ -151,6 +152,9 @@ def generate_nl_game(
         Solver passed to generate_random() to build the underlying linear-quadratic vGNE data
         (see generate_random() and GNEP_LQ). Unrelated to the solver later used to solve the
         returned nonlinear GNEP via gnep.solve(solver=...).
+    verbose : bool
+        Passed through to generate_random(): if True, print its monotonicity check. Off by
+        default.
 
     Returns
     -------
@@ -187,7 +191,7 @@ def generate_nl_game(
         inactive_slack_min=inactive_slack_min, inactive_slack_max=inactive_slack_max,
         lambda_min=lambda_min, lambda_max=lambda_max,
         box_slack_min=box_slack_min, box_slack_max=box_slack_max,
-        mu_scale=mu_scale, solver=solver,
+        mu_scale=mu_scale, solver=solver, verbose=verbose,
     )
 
     nvar = data["nvar"]

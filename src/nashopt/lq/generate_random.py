@@ -27,7 +27,8 @@ def generate_random(
     box_slack_min: float = 0.5,
     box_slack_max: float = 1.5,
     mu_scale: float = 1.0,
-    solver: str = "dr_daqp"
+    solver: str = "dr_daqp",
+    verbose: bool = False
     ):
     """
     Generate a linear-quadratic generalized Nash equilibrium problem.
@@ -69,7 +70,7 @@ def generate_random(
     seed : int or None
         Random seed.
     mu : float
-        Desired lower bound on lambda_min(0.5*(G+G.T)), i.e., the monotonicity constant.
+        Desired lower bound on min eigenvalue of 0.5*(G+G.T), i.e., the monotonicity constant.
     inactive_slack_min, inactive_slack_max : float
         Range for strictly positive slacks of inactive inequalities.
     lambda_min, lambda_max : float
@@ -80,6 +81,9 @@ def generate_random(
         (both sides, for variables with inactive box constraints).
     mu_scale : float
         Scale for equality multipliers.
+    verbose : bool
+        If True, print the monotonicity check (min eigenvalue of 0.5*(G+G.T) and min eigenvalue of Q_i) for every agent, via np.linalg.eigvalsh). Off by default, since it is only a
+        diagnostic and the eigenvalue computations add cost for large nvar.
 
     Returns
     -------
@@ -129,8 +133,8 @@ def generate_random(
     D = rng.standard_normal((nvar, nvar))
     D = np.where(block_mask_D, D, 0.0) # Make block strictly lower triangular
         
-    lambda_min = np.linalg.eigvalsh(CtC).min()
-    G = CtC + D - D.T + (mu - lambda_min) * np.eye(nvar) # Pseudogradient matrix 
+    eig_min = np.linalg.eigvalsh(CtC).min()
+    G = CtC + D - D.T + (mu - eig_min) * np.eye(nvar) # Pseudogradient matrix 
     
     Q_agents = []
     for i in range(N):
@@ -141,10 +145,11 @@ def generate_random(
         Qi[si:ei, ei:]   = 2.0 * G[si:ei, ei:]
         Q_agents.append(Qi)
 
-    lam_min_shifted = np.linalg.eigvalsh(0.5 * (G + G.T)).min()
-    print(f"Monotonicity check: lambda_min(0.5*(G+G.T)) = {lam_min_shifted:.4e}")
-    lam_min_Q = [np.linalg.eigvalsh(Q_agents[i][offsets[i]:offsets[i + 1], offsets[i]:offsets[i + 1]]).min() for i in range(N)]
-    print(f"Monotonicity check: lambda_min(Q_i) = {[f'{l:.4e}' for l in lam_min_Q]}")
+    if verbose:
+        eig_min_shifted = np.linalg.eigvalsh(0.5 * (G + G.T)).min()
+        print(f"Monotonicity check: min eigenvalue of 0.5*(G+G.T) = {eig_min_shifted:.4e}")
+        eig_min_Q = [np.linalg.eigvalsh(Q_agents[i][offsets[i]:offsets[i + 1], offsets[i]:offsets[i + 1]]).min() for i in range(N)]
+        print(f"Monotonicity check: min eigenvalue of Q_i = {[f'{l:.4e}' for l in eig_min_Q]}")
 
     # ------------------------------------------------------------
     # 5. Generate inequality constraints A x <= b.
