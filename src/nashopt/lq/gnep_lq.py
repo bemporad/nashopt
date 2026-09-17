@@ -120,7 +120,7 @@ class GNEP_LQ():
             - "op_extrap" Kotsalis-Lan-Li Operator Extrapolation method for strongly-monotone variational non-parametric GNEPs
                (Kotsalis, Lan, Li, 2022/2023), using DAQP for evaluating projections
             - "prox_admm" proximal ADMM algorithm (Borgens and Kanzow, 2021), only for variational non-parametric GNEPs
-            - "lemke" Lemke's method for LCPs, only for variational non-parametric GNEPs with lower-bounded variables and no equality constraints.
+            - "lemke" Lemke's method for LCPs, only for variational non-parametric GNEPs with lower-bounded variables.
             - "lemke_dual" Lemke's method applied on the dual reformulation of the KKT conditions of the game, only for variational non-parametric GNEPs. 
             - "log_ipm" logarithmic barrier interior point method, only for variational non-parametric GNEPs
             - "dr_daqp" Douglas-Rachford operator splitting with an active-set acceleration strategy (Arnstrom, Benenati, Belgioioso, 2026). See https://darnstrom.github.io/daqp/start/advanced/avi.
@@ -1267,8 +1267,10 @@ class GNEP_LQ():
             elif self.solver == 'lemke':
                 t_lemke = time.perf_counter()
                 Qi, p, S = self.transform_cost(self.mip.Q, self.mip.c)
-                # The method assumes A x + b >= 0 and lb>=-inf                
-                sol = solve_lemke(Qi, S, p, -self.A, self.mip.b, self.lb, self.ub, **solver_options)  
+                # The method assumes A x + b >= 0 and lb>=-inf
+                A_lemke = -self.A if self.A is not None else np.zeros((0, self.nx))
+                b_lemke = self.mip.b if self.mip.b is not None else np.zeros(0)
+                sol = solve_lemke(Qi, S, p, A_lemke, b_lemke, self.lb, self.ub, Aeq=self.mip.Aeq, beq=self.mip.beq, **solver_options)
                 t_lemke = time.perf_counter() - t_lemke
                 sol.elapsed_time = t_lemke
             

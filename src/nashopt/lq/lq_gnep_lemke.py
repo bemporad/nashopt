@@ -10,20 +10,28 @@ from quantecon.optimize.linprog_simplex import PivOptions
 from types import SimpleNamespace
 import time
 
-def solve(Q, S, p, A, b, lb, ub=None, max_iter=10**6, tol=1e-12):
+def solve(Q, S, p, A, b, lb, ub=None, Aeq=None, beq=None, max_iter=10**6, tol=1e-12):
     """
     Attempts to compute a variational GNE of the LQ-GNEP via Lemke's method.
 
     Each player i minimizes a convex quadratic objective over the shared
-    feasible set  {x : A x + b >= 0}:
+    feasible set  {x : A x + b >= 0, Aeq x = beq}:
 
         min_{xi}  0.5 xi' Qi xi  +  xi' sum(j\neq i) S[i][j] xj  +  pi' xi
-        s.t.      A x + b >= 0   (shared constraints,  A x + b >= 0 form)
+        s.t.      A x + b >= 0   (shared inequality constraints, A x + b >= 0 form)
+                  Aeq x = beq   (shared equality constraints, optional)
                   x >= lb        (finite lower bounds, used for the shift y = x-lb)
 
     A VE is a GNE where all players share the same Lagrange multiplier for the
     shared constraints, i.e. the solution of the aggregated VI  F(x)'(z-x) >= 0
     with mapping  F(x) = W x + p_vec.
+
+    Equality constraints Aeq x = beq are handled by augmenting the inequality
+    constraints A x + b >= 0 with the equivalent pair of opposing inequalities
+    Aeq x - beq >= 0  and  -Aeq x + beq >= 0, i.e.
+
+        A <- [ A ; Aeq ; -Aeq ]
+        b <- [ b ; -beq ; beq ]
 
     Parameters
     ----------
@@ -37,6 +45,11 @@ def solve(Q, S, p, A, b, lb, ub=None, max_iter=10**6, tol=1e-12):
     ub : (nN,) array or None           upper bounds on x. When given, the rows
                                        -I x + ub >= 0 are prepended to (A, b)
                                        automatically. Default: None.
+    Aeq : (meq, nN) array or None      shared equality constraint matrix (Aeq x = beq).
+                                       Augmented into (A, b) as [A; Aeq; -Aeq] and
+                                       [b; -beq; beq]. Default: None.
+    beq : (meq,) array or None         shared equality constraint offset. Required
+                                       when Aeq is given. Default: None.
     max_iter : int                     maximum number of iterations for Lemke's method (default: 10^6)
     tol : float                        tolerance for pivoting and ratio tests in Lemke's method (default: 1e-12)
 
@@ -44,7 +57,9 @@ def solve(Q, S, p, A, b, lb, ub=None, max_iter=10**6, tol=1e-12):
     -------
     sol : SimpleNamespace with fields
         x = solution
-        lam = Lagrange multipliers, not split by agent
+        lam = Lagrange multipliers, not split by agent. When Aeq is given, the
+              last 2*meq entries are the multipliers of the [Aeq; -Aeq] rows
+              appended to (A, b); their difference is the multiplier of Aeq x = beq.
         status = info returned by lemke_lcp solver
         num_iters = number of iterations performed by lemke_lcp
         success = True the LCP problem was solved
@@ -69,9 +84,9 @@ def solve(Q, S, p, A, b, lb, ub=None, max_iter=10**6, tol=1e-12):
       - Feasibility:     A x* + b >= 0
       - Complementarity: lam*_j (A x* + b)_j = 0,   lam* >= 0
       
-    [1] D.A. Schiro, J.-S. Pang, U.V. Shanbhag, "On the solution of affine generalized 
-        Nash equilibrium problems with shared constraints by Lemke’s method," 
-        Mathematical Programming, Ser. A, 142:1–46, 2013.
+    [1] D.A. Schiro, J.-S. Pang, U.V. Shanbhag, "On the solution of affine generalized
+        Nash equilibrium problems with shared constraints by Lemke's method,"
+        Mathematical Programming, Ser. A, 142:1-46, 2013.
     """
     
     t0 = time.perf_counter()
@@ -90,6 +105,14 @@ def solve(Q, S, p, A, b, lb, ub=None, max_iter=10**6, tol=1e-12):
         ub = np.asarray(ub, float)
         A  = np.vstack([-np.eye(nN), A])
         b  = np.concatenate([ub, b])
+
+    # Append equality constraints Aeq x = beq as the opposing inequality pair
+    # Aeq x - beq >= 0  and  -Aeq x + beq >= 0
+    if Aeq is not None:
+        Aeq = np.asarray(Aeq, float)
+        beq = np.asarray(beq, float)
+        A   = np.vstack([A, Aeq, -Aeq])
+        b   = np.concatenate([b, -beq, beq])
 
     m = A.shape[0]
 

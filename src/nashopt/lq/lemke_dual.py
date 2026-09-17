@@ -156,6 +156,10 @@ def solve(Q, c, dim, A=None, b=None, lb=None, ub=None, E=None, f=None,
         s.t.      A x <= b   (shared inequality constraints, optional)
                   E x  = f   (shared equality constraints, optional)
                   lb <= x <= ub (finite lower and upper bounds, optional)
+                  
+    The method requires invertibility of the pseudogradient matrix G, where
+    F(x) = Gx + r is the pseudogradient of the game, and full row-rank of E 
+    if equality constraints are present.
 
     Parameters
     ----------
