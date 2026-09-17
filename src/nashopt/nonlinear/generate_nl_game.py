@@ -16,6 +16,17 @@ constraint, for a total of m_nl = n_exp + n_quad extra shared inequality constra
 m_nl_act are constructed to be active (tight) at the same x_star. The agents' linear cost terms
 are corrected so that the KKT stationarity conditions of the enlarged game still hold at x_star.
 
+Optionally (nonlinear_cost=True), a shared, non-quadratic convex potential term
+
+    P(x) = log(sum_{k=1}^{n_pot_terms} exp(a_pot_exp[k,:] . x + b_pot_exp[k]))
+
+(a log-sum-exp of n_pot_terms affine terms in the FULL x, built the same way as one of the
+n_exp log-sum-exp constraints above) is added identically to every agent's cost on top of the
+quadratic cost above. P is convex, so it only adds a symmetric PSD term to the game's
+pseudogradient Jacobian and cannot break monotonicity; the agents' linear cost terms are
+further corrected (folded into the same mechanism used for the nonlinear constraints) so that
+x_star remains an exact KKT point of this further-enlarged game, with the same multipliers.
+
 [1] A. Bemporad, T. Tatarenko, "Learning Parametric Monotone Games," arXiv preprint 2609.02494, 2026.
 https://arxiv.org/abs/2609.02494
 
@@ -59,6 +70,10 @@ def generate_nl_game(
     b_exp_scale: float = 1.0,
     Q_quad_scale: float = 1.0,
     a_quad_scale: float = 1.0,
+    nonlinear_cost: bool = False,
+    n_pot_terms: int = 2,
+    a_pot_scale: float = 1.0,
+    b_pot_scale: float = 1.0,
     solver: str = "dr_daqp",
     verbose: bool = False,
 ):
@@ -73,12 +88,13 @@ def generate_nl_game(
 
     Each agent i minimizes
 
-        J_i(x) = 0.5 x^T Q_i x + c_i^T x_i
+        J_i(x) = 0.5 x^T Q_i x + c_i^T x_i + P(x)
 
     w.r.t. x_i given x_-i, where Q_i is symmetric positive semidefinite and c_i is a linear
     term. Q_i and the shared linear constraints/box constraints are built exactly as in
     lq/generate_random.py, by calling that function first. On top of that game, this function
-    adds the nonlinear convex shared inequality constraints
+    optionally adds a convex nonlinear potential term P(x) to each agent's cost, and the
+    nonlinear convex shared inequality constraints
 
         log(sum_{k=1}^N exp(a_exp_s[k,:] . x + b_exp_s[k])) <= c_exp_s,   s = 1,...,n_exp
         x^T Q_quad_s x + a_quad_s^T x <= c_quad_s,                        s = 1,...,n_quad
@@ -148,6 +164,21 @@ def generate_nl_game(
         quadratic-form constraints.
     a_quad_scale : float
         Scale of the random vectors a_quad_s defining the quadratic-form constraints.
+    nonlinear_cost : bool
+        If True, add the shared, non-quadratic convex potential term
+        P(x) = log(sum_{k=1}^{n_pot_terms} exp(a_pot_exp[k,:] . x + b_pot_exp[k])) identically
+        to every agent's cost, on top of the quadratic cost 0.5 x^T Q_i x + c_i^T x_i (see
+        module docstring). Off by default.
+    n_pot_terms : int
+        Number of terms summed in the shared potential's log-sum-exp (only used when
+        nonlinear_cost=True); determines the shape of a_pot_exp (n_pot_terms, nvar) and
+        b_pot_exp (n_pot_terms,). Must be positive.
+    a_pot_scale : float
+        Scale of the random matrix a_pot_exp defining the shared potential term (only used
+        when nonlinear_cost=True).
+    b_pot_scale : float
+        Scale of the random bias vector b_pot_exp defining the shared potential term (only
+        used when nonlinear_cost=True).
     solver : str
         Solver passed to generate_random() to build the underlying linear-quadratic vGNE data
         (see generate_random() and GNEP_LQ). Unrelated to the solver later used to solve the
@@ -178,6 +209,8 @@ def generate_nl_game(
     m_nl = n_exp + n_quad
     if not (0 <= m_nl_act <= m_nl):
         raise ValueError("m_nl_act must satisfy 0 <= m_nl_act <= m_nl.")
+    if nonlinear_cost and n_pot_terms <= 0:
+        raise ValueError("n_pot_terms must be positive when nonlinear_cost=True.")
 
     # ------------------------------------------------------------
     # 1. Build the quadratic costs, shared linear constraints, and box constraints, exactly
@@ -285,16 +318,43 @@ def generate_nl_game(
     dphi_nl_star = np.asarray(jax.jacobian(phi_nl)(x_star_j))  # (m_nl, nvar)
 
     # ------------------------------------------------------------
+    # 5b. Optionally build the shared, non-quadratic convex potential term
+    #     P(x) = log(sum_k exp(a_pot_exp[k,:] . x + b_pot_exp[k])), a log-sum-exp of
+    #     n_pot_terms affine terms in the FULL x (built the same way as one of the n_exp
+    #     log-sum-exp constraints above), added identically to every agent's cost below
+    #     (step 8). P is convex, so it only adds a symmetric PSD term to the game's
+    #     pseudogradient Jacobian and cannot break monotonicity. Its gradient at x_star is
+    #     folded into `correction` (step 6) below, exactly like the nonlinear constraints'
+    #     own dphi_nl_star.T @ lambda_nl_star term, so that x_star remains stationary.
+    # ------------------------------------------------------------
+    if nonlinear_cost:
+        a_pot_exp = rng.standard_normal((n_pot_terms, nvar)) * a_pot_scale / np.sqrt(nvar)
+        b_pot_exp = rng.standard_normal(n_pot_terms) * b_pot_scale
+
+        a_pot_exp_j = jnp.asarray(a_pot_exp)
+        b_pot_exp_j = jnp.asarray(b_pot_exp)
+
+        def potential(x):
+            return jax.scipy.special.logsumexp(a_pot_exp_j @ x + b_pot_exp_j)
+
+        grad_potential_star = np.asarray(jax.grad(potential)(x_star_j))
+    else:
+        potential = None
+        a_pot_exp = None
+        b_pot_exp = None
+        grad_potential_star = np.zeros(nvar)
+
+    # ------------------------------------------------------------
     # 6. Correct the agents' linear cost terms so that KKT stationarity still holds:
     #
     #     G x_star + c + A.T lambda_star + E.T mu_star - lam_lb + lam_ub
-    #         + dphi_nl(x_star).T lambda_nl_star = 0.
+    #         + dphi_nl(x_star).T lambda_nl_star + grad P(x_star) = 0.
     #
     # generate_random() already ensured that the first four terms sum to zero (with c the
-    # linear cost term it built), so only the extra nonlinear term needs to be subtracted
-    # from each agent's own block of c.
+    # linear cost term it built), so only the extra nonlinear-constraint and (if
+    # nonlinear_cost) potential terms need to be subtracted from each agent's own block of c.
     # ------------------------------------------------------------
-    correction = dphi_nl_star.T @ lambda_nl_star  # (nvar,)
+    correction = dphi_nl_star.T @ lambda_nl_star + grad_potential_star  # (nvar,)
 
     c_agents = [ci.copy() for ci in gnep_lq_prob.c]
     for i in range(N):
@@ -319,15 +379,21 @@ def generate_nl_game(
         return jnp.zeros(0)
 
     # ------------------------------------------------------------
-    # 8. Build the jax cost functions f_i(x) = 0.5 x^T Q_i x + c_i^T x.
+    # 8. Build the jax cost functions f_i(x) = 0.5 x^T Q_i x + c_i^T x (+ P(x), if
+    #    nonlinear_cost).
     # ------------------------------------------------------------
     Q_agents_j = [jnp.asarray(Qi) for Qi in Q_agents]
     c_agents_j = [jnp.asarray(ci) for ci in c_agents]
 
     def make_f(Qi, ci):
-        @jax.jit
-        def f(x):
-            return 0.5 * x @ Qi @ x + ci @ x
+        if potential is None:
+            @jax.jit
+            def f(x):
+                return 0.5 * x @ Qi @ x + ci @ x
+        else:
+            @jax.jit
+            def f(x):
+                return 0.5 * x @ Qi @ x + ci @ x + potential(x)
         return f
 
     f_agents = [make_f(Q_agents_j[i], c_agents_j[i]) for i in range(N)]
@@ -365,6 +431,14 @@ def generate_nl_game(
         "RHS_nl": RHS_nl,
         "phi_nl": phi_nl,
         "g": g,
+
+        # Shared potential cost term (nonlinear_cost)
+        "nonlinear_cost": nonlinear_cost,
+        "n_pot_terms": n_pot_terms,
+        "a_pot_exp": a_pot_exp,
+        "b_pot_exp": b_pot_exp,
+        "potential": potential,
+        "grad_potential_star": grad_potential_star,
 
         # Nonlinear active-set information
         "lambda_nl_star": lambda_nl_star,
