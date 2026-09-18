@@ -13,7 +13,12 @@
 #     x^{k+1} = P_X(x^k - alpha * F(y^k))
 #
 # Step-size condition for convergence: alpha < 1 / L,
-# where L is the Lipschitz constant of F.
+# where L is the Lipschitz constant of F. L is only ever a finite-sample
+# estimate (see _estimate_alpha), so convergence is certified independently
+# via the natural-map residual ||x^k - y^k|| (zero at x^k iff x^k solves the
+# VI, for any alpha > 0), not just the step norm ||x^{k+1} - x^k|| -- the
+# latter can also vanish at a fixed point of the two-step map above that is
+# NOT a VI solution when alpha does not satisfy alpha < 1/L.
 #
 # IPOPT (via cyipopt) solves each projection subproblem by default, with
 # warm-starting from the previous solution; a penalized least-squares (TRF)
@@ -23,6 +28,7 @@
 
 import numpy as np
 import time
+import jax
 import jax.numpy as jnp
 from scipy.optimize import least_squares
 from types import SimpleNamespace
@@ -225,11 +231,53 @@ def _pseudogradient(gnep, x):
     return Fx
 
 
+def _pseudogradient_jax(gnep):
+    """Same map as _pseudogradient, but as a single jitted jax function F(x),
+    for use with jax.jacobian (exact, not finite-difference) in _estimate_alpha."""
+    i1, i2, N = gnep.i1, gnep.i2, gnep.N
+
+    @jax.jit
+    def F(x):
+        return jnp.concatenate([gnep.df[i](x[i1[i]:i2[i]], x) for i in range(N)])
+    return F
+
+
+def _estimate_alpha(gnep, x0, safety=0.5, n_samples=20, seed=0):
+    """Estimate a safe extragradient step size alpha = safety / L.
+
+    L is the max spectral norm of F's (exact, jax-autodiff) Jacobian sampled
+    at x0 plus n_samples-1 random points spread over a region around x0. A
+    single sample AT x0 (as used to estimate L in earlier versions of this
+    function) only bounds the LOCAL curvature there; when F is genuinely
+    nonlinear (e.g. it includes the gradient of a shared, non-quadratic
+    convex cost potential -- see GNEP.solve()'s nonlinear_cost option),
+    that local estimate can badly underestimate the Lipschitz constant
+    relevant over the region the iterates actually traverse, giving a step
+    size too large for Korpelevich's convergence guarantee (alpha < 1/L).
+    Sampling more broadly, with an exact Jacobian rather than a single
+    finite-difference ratio, catches this in practice, though it remains a
+    finite-sample estimate, not a certified global bound; the natural-map
+    residual check in extragrad_nlgnep's main loop is what actually
+    guarantees status_str="converged" means a genuine VI solution, not this
+    estimate's quality.
+    """
+    F = _pseudogradient_jax(gnep)
+    JF = jax.jacobian(F)
+    rng = np.random.default_rng(seed)
+    radius = 10.0 * max(np.linalg.norm(x0), 1.0)
+    x0j = jnp.asarray(x0, dtype=jnp.float64)
+    points = [x0j] + [x0j + radius * jnp.asarray(rng.standard_normal(x0.shape[0]))
+                       for _ in range(n_samples - 1)]
+    L = max(float(jnp.linalg.norm(JF(p), 2)) for p in points)
+    return safety / max(L, 1e-12)
+
+
 def extragrad_nlgnep(
     gnep,
     tol=1e-8,
     maxiter=1000,
     alpha=None,
+    alpha_safety=0.5,
     x0=None,
     verbose=False,
     projection_solver="ipopt",
@@ -244,12 +292,24 @@ def extragrad_nlgnep(
         Nonlinear GNEP object (nashopt.nonlinear.gnep_base.GNEP), constructed
         with variational=True.
     tol : float
-        Stop when ||x^{k+1} - x^k||_inf < tol.
+        Stop when both ||x^{k+1} - x^k||_inf < tol AND the natural-map
+        residual ||x^k - y^k||_inf < tol, y^k = P_X(x^k - alpha*F(x^k))
+        being the extragradient half-step already computed each iteration.
+        The residual term is what actually certifies x^k solves the VI (it
+        vanishes there for any alpha > 0, unlike the step norm alone, which
+        can vanish at a fixed point of the two-step map that is NOT a VI
+        solution if alpha exceeds Korpelevich's convergence threshold).
     maxiter : int
         Maximum iterations.
     alpha : float, optional
-        Step size. If None, estimated as 0.99 / L where L is the Lipschitz
-        constant of F approximated by a single finite-difference ratio.
+        Step size. If None, estimated via _estimate_alpha (see its
+        docstring) as alpha_safety / L, L being the max spectral norm of
+        F's Jacobian sampled over several points around x0.
+    alpha_safety : float, optional
+        Safety factor applied to the automatic alpha estimate above (ignored
+        if alpha is given directly). Default 0.5, well under the 1/L
+        theoretical threshold to leave margin for L being a finite-sample
+        estimate rather than a certified global bound.
     x0 : ndarray (nvar,), optional
         Initial point. Default: zeros.
     verbose : bool
@@ -274,7 +334,8 @@ def extragrad_nlgnep(
                                   functions, before setup and the main loop use them
         status_str   : str     -- 'converged' or 'max_iterations_reached'
         num_iters    : int     -- iterations performed
-        info         : dict    -- {'converged': bool, 'final_err': float}
+        info         : dict    -- {'converged': bool, 'final_err': float,
+                                    'final_nat_residual': float}
     """
     nvar = gnep.nvar
 
@@ -302,13 +363,7 @@ def extragrad_nlgnep(
     jax_jit_time = time.perf_counter() - t_jit0
 
     if alpha is None:
-        rng = np.random.default_rng(0)
-        eps = 1e-4 * max(np.linalg.norm(x0), 1.0)
-        xb = x0 + eps * rng.standard_normal(nvar)
-        Fa = _pseudogradient(gnep, x0)
-        Fb = _pseudogradient(gnep, xb)
-        L = np.linalg.norm(Fa - Fb) / max(np.linalg.norm(x0 - xb), 1e-15)
-        alpha = 0.99 / max(L, 1e-12)
+        alpha = _estimate_alpha(gnep, x0, safety=alpha_safety)
 
     # Two independent projectors: y-step and x-step warm-start separately.
     projection_solver = projection_solver.lower()
@@ -327,6 +382,7 @@ def extragrad_nlgnep(
     t_start = time.perf_counter()
     status_str = "max_iterations_reached"
     err = np.nan
+    nat_residual = np.nan
     k = -1
 
     for k in range(maxiter):
@@ -336,12 +392,19 @@ def extragrad_nlgnep(
         x_new = proj_x.project(x - alpha * Fy)
 
         err = np.linalg.norm(x_new - x, np.inf)
+        # natural-map residual at x (BEFORE the update): x solves the VI iff
+        # this is zero, for any alpha > 0 -- unlike err above, which can also
+        # vanish at a spurious fixed point of the two-step map when alpha
+        # exceeds Korpelevich's convergence threshold (see extragrad_nlgnep's
+        # docstring and _estimate_alpha's).
+        nat_residual = np.linalg.norm(x - y, np.inf)
         x = x_new
 
         if verbose:
-            print(f"  extragrad_nl iter {k+1}: ||dx||_inf={err:.3e}")
+            print(f"  extragrad_nl iter {k+1}: ||dx||_inf={err:.3e}, "
+                  f"natural residual={nat_residual:.3e}")
 
-        if err < tol:
+        if err < tol and nat_residual < tol:
             status_str = "converged"
             break
 
@@ -353,7 +416,8 @@ def extragrad_nlgnep(
         jax_jit_time=jax_jit_time,
         status_str=status_str,
         num_iters=k + 1,
-        info={"converged": status_str == "converged", "final_err": float(err)},
+        info={"converged": status_str == "converged", "final_err": float(err),
+              "final_nat_residual": float(nat_residual)},
     )
 
 
@@ -374,9 +438,9 @@ def solve_extragrad(gnep, x0=None, solver_opts=None, verbose=1):
         does not itself provide 'x0'.
     solver_opts : dict or None
         Keyword arguments forwarded to extragrad_nlgnep(gnep, ...): tol,
-        maxiter, alpha, x0, verbose, projection_solver, rho. See
-        extragrad_nlgnep's docstring for details. If None, extragrad_nlgnep's
-        own defaults are used.
+        maxiter, alpha, alpha_safety, x0, verbose, projection_solver, rho.
+        See extragrad_nlgnep's docstring for details. If None,
+        extragrad_nlgnep's own defaults are used.
     verbose : int, optional
         Verbosity level. 0: silent. >0: termination report. Used only if
         solver_opts does not itself specify 'verbose' (in which case that

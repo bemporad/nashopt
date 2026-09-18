@@ -72,7 +72,7 @@ print("\nSolving GNEP with N =", N, "agents (extragradient method) ... ", end=""
 projection_solver = "trf" # usually faster than "ipopt"
 # projection_solver = "ipopt" 
 sol_eg = gnep.solve(x0, solver="extragrad", verbose=0,
-                     extragrad_opts={"tol": 1e-9, "maxiter": 5000, "alpha": alpha, "projection_solver": projection_solver})
+                     solver_opts={"tol": 1e-9, "maxiter": 5000, "alpha": alpha, "projection_solver": projection_solver})
 x_star_eg, stats_eg = sol_eg.x, sol_eg.stats
 print("done.")
 
